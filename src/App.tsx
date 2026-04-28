@@ -18,7 +18,7 @@ export default function App() {
   const isSettingsWindow = webviewLabel === SETTINGS_WEBVIEW_LABEL
 
   return (
-    <div className="min-h-screen text-foreground">
+    <div className="app-heroui-sm min-h-screen text-foreground">
       <I18nProvider>
         {isSettingsWindow ? <SettingsWindowPage /> : <NetOctoApp />}
       </I18nProvider>

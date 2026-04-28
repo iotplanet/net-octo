@@ -43,6 +43,8 @@ const en = {
   'session.clearInput': 'Clear input',
   'session.sendTarget': 'Send target',
   'session.payloadPlaceholder': 'ASCII / HEX payload; Enter does not send (use SEND)',
+  'session.payloadPlaceholderHex':
+    'HEX only (0-9, A-F); auto uppercased, bytes spaced like DE AD BE EF; Enter does not send (use play)',
   'session.send': 'SEND',
   'session.sendPresetsSection': 'Outbound messages',
   'session.addPreset': 'Add message',
@@ -80,6 +82,7 @@ const en = {
   'err.udpMulticastEmpty': 'Add at least one multicast group (ip:port)',
   'err.udpMulticastPortMismatch': 'Multicast groups must use the same port',
   'err.udpEndpointInvalid': 'Invalid host:port',
+  'err.hexIncomplete': 'HEX must have an even number of digits (complete bytes)',
 } as const
 
 export type MessageId = keyof typeof en
@@ -127,6 +130,8 @@ const zh: Record<MessageId, string> = {
   'session.clearInput': '清空输入',
   'session.sendTarget': '发送目标',
   'session.payloadPlaceholder': 'ASCII / HEX 载荷，Enter 不会发送（点 SEND）',
+  'session.payloadPlaceholderHex':
+    '仅十六进制 0-9、A-F；自动大写并按字节空格分隔如 DE AD BE EF；Enter 不发送（点发送）',
   'session.send': 'SEND',
   'session.sendPresetsSection': '下发报文',
   'session.addPreset': '添加报文',
@@ -164,6 +169,7 @@ const zh: Record<MessageId, string> = {
   'err.udpMulticastEmpty': '请至少添加一个多播组 (ip:port)',
   'err.udpMulticastPortMismatch': '多播组必须使用相同端口',
   'err.udpEndpointInvalid': '无效的 host:port',
+  'err.hexIncomplete': '十六进制须为偶数位（完整字节）',
 }
 
 export const catalogs: Record<Locale, Record<MessageId, string>> = { en: en as Record<MessageId, string>, zh }

@@ -79,7 +79,7 @@ export default function NetOctoApp() {
       >
         <Header className="flex h-10 items-center justify-between gap-3 border-b border-divider/60 px-3 py-0 sm:h-11 sm:px-4">
           <div className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
-            <Text className="truncate text-sm font-semibold leading-none tracking-tight sm:text-base">
+            <Text size="sm" className="truncate font-semibold leading-none tracking-tight">
               NetOcto
             </Text>
             <Text
@@ -184,7 +184,7 @@ export default function NetOctoApp() {
               <Modal.Header>
                 <Modal.Heading>{t('settings.title')}</Modal.Heading>
               </Modal.Header>
-              <Modal.Body className="flex flex-col gap-3">
+              <Modal.Body className="flex flex-col gap-2">
                 <Text size="sm" variant="muted">
                   {t('settings.language')}
                 </Text>

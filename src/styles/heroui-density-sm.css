@@ -1,0 +1,70 @@
+/**
+ * Scoped HeroUI density: default controls align with compact / `size="sm"` feel.
+ * Selectors are prefixed with `.app-heroui-sm` (see App.tsx) so cascade wins over theme defaults.
+ */
+
+@layer components {
+  .app-heroui-sm .button.button--md:not(.button--lg) {
+    @apply h-9 gap-1.5 px-3 text-xs md:h-8;
+  }
+
+  .app-heroui-sm .button.button--md:not(.button--lg) svg:not([data-slot="spinner"] svg, [data-slot="link-icon"] svg) {
+    @apply size-4;
+  }
+
+  .app-heroui-sm .button.button--md.button--icon-only:not(.button--lg) {
+    @apply w-9 md:w-8;
+  }
+
+  .app-heroui-sm .input {
+    @apply py-1.5 text-sm sm:text-sm;
+  }
+
+  .app-heroui-sm .textarea {
+    @apply py-1.5 text-sm sm:text-sm;
+  }
+
+  .app-heroui-sm .select__trigger {
+    @apply min-h-8 py-1.5 text-xs;
+  }
+
+  .app-heroui-sm .checkbox {
+    @apply gap-2;
+  }
+
+  .app-heroui-sm .radio {
+    @apply gap-2;
+  }
+
+  .app-heroui-sm .list-box-item {
+    @apply min-h-8 gap-2 py-1;
+  }
+
+  .app-heroui-sm .card {
+    @apply gap-2 p-3;
+  }
+
+  .app-heroui-sm .card__title {
+    @apply text-xs leading-5;
+  }
+
+  .app-heroui-sm .modal__dialog {
+    @apply p-4;
+  }
+
+  .app-heroui-sm .modal__header {
+    @apply pb-2;
+  }
+
+  .app-heroui-sm .modal__body {
+    @apply gap-2;
+  }
+
+  .app-heroui-sm .modal__footer {
+    @apply gap-2 pt-2;
+  }
+
+  .app-heroui-sm .label {
+    @apply text-xs;
+  }
+}

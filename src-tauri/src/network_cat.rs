@@ -1202,43 +1202,37 @@ pub async fn nc_stop_server(
     nc_stop_session(app, registry, session_id, webview_label).await
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SendArgs {
-    pub session_id: String,
-    pub webview_label: String,
-    pub target: String,
-    pub data: String,
-    pub send_hex: bool,
-    pub parse_escapes: bool,
-}
-
 #[tauri::command]
 pub async fn nc_send(
     app: AppHandle,
     registry: State<'_, SessionRegistry>,
-    payload: SendArgs,
+    session_id: String,
+    webview_label: String,
+    target: String,
+    data: String,
+    send_hex: bool,
+    parse_escapes: bool,
 ) -> Result<(), String> {
-    let state = registry.get(&payload.session_id).await;
-    let wv = payload.webview_label.as_str();
-    let sid = payload.session_id.as_str();
+    let state = registry.get(&session_id).await;
+    let wv = webview_label.as_str();
+    let sid = session_id.as_str();
     let bytes = decode_send_payload(
-        &payload.data,
-        payload.send_hex,
-        if payload.send_hex {
+        &data,
+        send_hex,
+        if send_hex {
             false
         } else {
-            payload.parse_escapes
+            parse_escapes
         },
     )?;
 
-    let mode = if payload.send_hex { "HEX" } else { "ASCII" };
+    let mode = if send_hex { "HEX" } else { "ASCII" };
     let len = bytes.len();
 
     let udp = state.udp_out.lock().await.clone();
     match udp {
         Some(UdpOutTx::Server(tx)) => {
-            if payload.target == "all" {
+            if target == "all" {
                 let _ = tx.send(UdpSrvCmd::SendAll(bytes.clone()));
                 emit_log(
                     &app,
@@ -1249,8 +1243,7 @@ pub async fn nc_send(
                 )
                 .await;
             } else {
-                let id: u64 = payload
-                    .target
+                let id: u64 = target
                     .parse()
                     .map_err(|_| "target 应为 all 或数字对端 ID")?;
                 let _ = tx.send(UdpSrvCmd::SendOne(id, bytes.clone()));
@@ -1280,7 +1273,7 @@ pub async fn nc_send(
             if g.is_empty() {
                 return Err("没有可用连接".into());
             }
-            if payload.target == "all" {
+            if target == "all" {
                 let n = g.len();
                 for (_, entry) in g.iter() {
                     let _ = entry.tx.send(bytes.clone());
@@ -1297,8 +1290,7 @@ pub async fn nc_send(
                 )
                 .await;
             } else {
-                let id: u64 = payload
-                    .target
+                let id: u64 = target
                     .parse()
                     .map_err(|_| "target 应为 all 或数字客户端 ID")?;
                 let entry = g
@@ -1317,7 +1309,7 @@ pub async fn nc_send(
         }
     }
 
-    let preview = preview_payload(&bytes, payload.send_hex);
+    let preview = preview_payload(&bytes, send_hex);
     emit_log(&app, wv, sid, "send-data", preview).await;
 
     Ok(())

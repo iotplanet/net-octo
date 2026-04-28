@@ -7,7 +7,9 @@ export function SettingsWindowPage() {
 
   return (
     <div className="flex min-h-dvh flex-col gap-4 bg-background p-4 text-foreground">
-      <Text className="text-lg font-semibold">{t('settings.title')}</Text>
+      <Text size="sm" className="text-base font-semibold">
+        {t('settings.title')}
+      </Text>
       <Text size="sm" variant="muted">
         {t('settings.language')}
       </Text>

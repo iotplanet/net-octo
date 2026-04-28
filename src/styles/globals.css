@@ -1,6 +1,7 @@
 /* src/styles/globals.css */
 @import "tailwindcss";
 @import "@heroui/styles";
+@import "./heroui-density-sm.css";
 
 :root {
   --window-control-height: 32px;

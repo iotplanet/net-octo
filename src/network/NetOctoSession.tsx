@@ -27,6 +27,7 @@ import {
   saveSettings,
 } from './persist'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { compactHexUpper, isCompleteHexPayload, normalizeHexInput } from './hexInput'
 
 interface LogLine {
   ts: string
@@ -476,6 +477,15 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   }, [sendPresets, loopPresetId])
 
   useEffect(() => {
+    if (sendAscii) return
+    setSendPresets((ps) => {
+      const next = ps.map((p) => ({ ...p, body: normalizeHexInput(p.body) }))
+      if (next.every((p, i) => p.body === ps[i]?.body)) return ps
+      return next
+    })
+  }, [sendAscii])
+
+  useEffect(() => {
     const dead = { v: false }
     const unlisteners: UnlistenFn[] = []
     const w = getCurrentWebviewWindow()
@@ -582,15 +592,17 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       const r = sendRef.current
       const body =
         r.sendPresets.find((p) => p.id === r.loopPresetId)?.body ?? r.sendPresets[0]?.body ?? ''
+      if (!r.sendAscii) {
+        const hex = compactHexUpper(body)
+        if (hex.length === 0 || hex.length % 2 !== 0) return
+      }
       void invoke('nc_send', {
-        payload: {
-          sessionId,
-          webviewLabel,
-          target: r.sendTarget,
-          data: body,
-          sendHex: !r.sendAscii,
-          parseEscapes: r.sendAscii && r.parseEscapes,
-        },
+        sessionId,
+        webviewLabel,
+        target: r.sendTarget,
+        data: body,
+        sendHex: !r.sendAscii,
+        parseEscapes: r.sendAscii && r.parseEscapes,
       }).catch((e) => setErr(String(e)))
     }, ms)
     return () => {
@@ -690,20 +702,30 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     async (presetId: string) => {
       setErr(null)
       const data = sendPresets.find((p) => p.id === presetId)?.body ?? ''
-      if (!data && sendAscii) {
-        setErr(t('err.sendEmpty'))
-        return
+      if (sendAscii) {
+        if (!data) {
+          setErr(t('err.sendEmpty'))
+          return
+        }
+      } else {
+        const hex = compactHexUpper(data)
+        if (hex.length === 0) {
+          setErr(t('err.sendEmpty'))
+          return
+        }
+        if (!isCompleteHexPayload(data)) {
+          setErr(t('err.hexIncomplete'))
+          return
+        }
       }
       try {
         await invoke('nc_send', {
-          payload: {
-            sessionId,
-            webviewLabel,
-            target: sendTarget,
-            data,
-            sendHex: !sendAscii,
-            parseEscapes: sendAscii && parseEscapes,
-          },
+          sessionId,
+          webviewLabel,
+          target: sendTarget,
+          data,
+          sendHex: !sendAscii,
+          parseEscapes: sendAscii && parseEscapes,
         })
       } catch (e) {
         setErr(String(e))
@@ -1087,8 +1109,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
               </Card.Header>
               <div
                 ref={logRef}
-                className={`nc-selectable nc-scroll min-h-0 flex-1 overflow-auto border-l-2 border-l-default-200 bg-default-50/80 px-2 py-2 pl-2.5 font-mono text-xs leading-5 text-default-700 selection:bg-primary/15 sm:px-3 sm:py-2.5 sm:pl-3 ${
-                  wrapRecv ? 'whitespace-pre-wrap' : 'whitespace-pre'
+                className={`nc-selectable nc-scroll min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto border-l-2 border-l-default-200 bg-default-50/80 px-2 py-2 pl-2.5 font-mono text-xs leading-5 text-default-700 whitespace-pre-wrap selection:bg-primary/15 sm:px-3 sm:py-2.5 sm:pl-3 ${
+                  wrapRecv ? 'break-words' : 'break-all'
                 }`}
               >
                 {lines.map((l, i) => {
@@ -1096,10 +1118,10 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   return (
                     <div
                       key={`${l.ts}-${i}-${l.kind}`}
-                      className="mb-0.5 rounded-sm border border-transparent px-0.5 hover:border-divider hover:bg-default-100/60"
+                      className="mb-0.5 min-w-0 rounded-sm border border-transparent px-0.5 hover:border-divider hover:bg-default-100/60"
                     >
                       <span className="text-default-400">[{l.ts}]</span>{' '}
-                      <span className={kindClass(l.kind)}>{l.line}</span>
+                      <span className={`min-w-0 ${kindClass(l.kind)}`}>{l.line}</span>
                     </div>
                   )
                 })}
@@ -1108,160 +1130,174 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
 
             <Separator className="bg-divider" />
 
-            <div className="flex shrink-0 flex-col gap-2 border-t border-divider bg-content1 p-2 sm:gap-2.5 sm:p-3">
-            <div className="flex flex-wrap items-end gap-2 text-xs">
-              <div className="min-w-0 max-w-[min(100%,14rem)] flex-1 sm:max-w-none">
-                <NcFieldLabel htmlFor={`${idPrefix}-tx-target`}>{t('session.fieldTarget')}</NcFieldLabel>
-                <Select
-                  fullWidth
-                  variant="secondary"
-                  aria-label={t('session.sendTarget')}
-                  selectedKey={sendTarget}
-                  onSelectionChange={(k) => {
-                    if (k != null) setSendTarget(String(k))
-                  }}
-                  className="text-xs"
-                >
-                  <Select.Trigger id={`${idPrefix}-tx-target`} className="min-h-8 w-full font-mono text-xs sm:min-h-9">
-                    <Select.Value />
-                    <Select.Indicator />
-                  </Select.Trigger>
-                  <Select.Popover placement="bottom start" className={LB_POPOVER}>
-                    <ListBox className={LB_LIST}>
-                      <ListBox.Item
-                        id="all"
-                        textValue={`${t('session.allTargets')} (${clients.length})`}
-                        className="text-xs"
-                      >
-                        {t('session.allTargets')} ({clients.length})
-                      </ListBox.Item>
-                      {clients.map((c) => (
-                        <ListBox.Item
-                          key={c.id}
-                          id={String(c.id)}
-                          textValue={`#${c.id} ${c.peer}`}
-                          className="text-xs"
-                        >
-                          #{c.id} {c.peer}
-                        </ListBox.Item>
-                      ))}
-                    </ListBox>
-                  </Select.Popover>
-                </Select>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                isDisabled={!sessionRunning}
-                onPress={() => void disconnect()}
-                className="shrink-0"
-              >
-                {t('session.disconnect')}
-              </Button>
-              <Button isIconOnly size="sm" variant="ghost" aria-label={t('session.clearLog')} onPress={clearLog} className="text-default-400">
-                <Eraser size={16} />
-              </Button>
-              <Button
-                isIconOnly
-                size="sm"
-                variant="ghost"
-                aria-label={t('session.clearPresetBodies')}
-                onPress={() => setSendPresets((ps) => ps.map((p) => ({ ...p, body: '' })))}
-                className="text-default-400"
-              >
-                <Trash2 size={16} />
-              </Button>
-            </div>
-            <div className="flex min-h-0 flex-col gap-2">
-              <NcFieldLabel htmlFor={`${idPrefix}-preset-0`}>{t('session.sendPresetsSection')}</NcFieldLabel>
-              <div className="nc-scroll flex max-h-[min(42vh,24rem)] flex-col gap-2.5 overflow-y-auto pr-0.5">
-                {sendPresets.map((p, i) => (
-                  <div
-                    key={p.id}
-                    className="flex gap-2 rounded-lg border border-divider/70 bg-default-50/60 p-2 dark:bg-default-100/10"
-                  >
-                    <Button
-                      isIconOnly
-                      variant="ghost"
-                      size="sm"
-                      isDisabled={!canSendFinal}
-                      aria-label={t('session.playSend')}
-                      className="mt-0.5 h-9 w-9 shrink-0 text-success hover:bg-success/15"
-                      onPress={() => void sendPresetById(p.id)}
+            <div className="flex shrink-0 flex-col gap-1.5 border-t border-divider bg-content1 px-2 py-1.5 sm:gap-2 sm:px-2.5 sm:py-2">
+            <Card
+              variant="secondary"
+              className="shrink-0 overflow-hidden rounded-lg border border-divider/70 bg-content2/40 shadow-sm ring-1 ring-default-950/[0.03] dark:bg-content2/20 dark:ring-white/[0.05]"
+            >
+              <Card.Header className="border-b border-divider/50 bg-default-100/20 px-2 py-1 sm:px-2.5 sm:py-1.5 dark:bg-default-100/10">
+                <Card.Title className="text-[10px] font-semibold uppercase tracking-wider text-default-400 sm:text-[11px]">
+                  {t('session.sendPresetsSection')}
+                </Card.Title>
+              </Card.Header>
+              <Card.Content className="flex flex-col gap-1.5 px-2 pb-2 pt-1.5 sm:gap-2 sm:px-2.5 sm:pb-2 sm:pt-2">
+                <div className="flex flex-wrap items-end gap-1.5 text-xs sm:gap-2">
+                  <div className="min-w-0 max-w-[min(100%,12rem)] flex-1 sm:max-w-none">
+                    <NcFieldLabel htmlFor={`${idPrefix}-tx-target`}>{t('session.fieldTarget')}</NcFieldLabel>
+                    <Select
+                      fullWidth
+                      variant="secondary"
+                      aria-label={t('session.sendTarget')}
+                      selectedKey={sendTarget}
+                      onSelectionChange={(k) => {
+                        if (k != null) setSendTarget(String(k))
+                      }}
+                      className="text-xs"
                     >
-                      <Play size={18} strokeWidth={2.25} className="translate-x-px" />
-                    </Button>
-                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <span className="shrink-0 select-none font-mono text-xs text-warning-600/90 dark:text-warning-400/90">
-                          ###
-                        </span>
-                        <Input
-                          value={p.title}
-                          disabled={sessionRunning}
+                      <Select.Trigger id={`${idPrefix}-tx-target`} className="min-h-7 w-full font-mono text-[11px] sm:min-h-8 sm:text-xs">
+                        <Select.Value />
+                        <Select.Indicator />
+                      </Select.Trigger>
+                      <Select.Popover placement="bottom start" className={LB_POPOVER}>
+                        <ListBox className={LB_LIST}>
+                          <ListBox.Item
+                            id="all"
+                            textValue={`${t('session.allTargets')} (${clients.length})`}
+                            className="text-xs"
+                          >
+                            {t('session.allTargets')} ({clients.length})
+                          </ListBox.Item>
+                          {clients.map((c) => (
+                            <ListBox.Item
+                              key={c.id}
+                              id={String(c.id)}
+                              textValue={`#${c.id} ${c.peer}`}
+                              className="text-xs"
+                            >
+                              #{c.id} {c.peer}
+                            </ListBox.Item>
+                          ))}
+                        </ListBox>
+                      </Select.Popover>
+                    </Select>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    isDisabled={!sessionRunning}
+                    onPress={() => void disconnect()}
+                    className="min-h-7 shrink-0 text-[11px] sm:min-h-8"
+                  >
+                    {t('session.disconnect')}
+                  </Button>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                    aria-label={t('session.clearLog')}
+                    onPress={clearLog}
+                    className="h-7 w-7 min-w-7 shrink-0 text-default-400 sm:h-8 sm:w-8 sm:min-w-8"
+                  >
+                    <Eraser size={15} />
+                  </Button>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                    aria-label={t('session.clearPresetBodies')}
+                    onPress={() => setSendPresets((ps) => ps.map((p) => ({ ...p, body: '' })))}
+                    className="h-7 w-7 min-w-7 shrink-0 text-default-400 sm:h-8 sm:w-8 sm:min-w-8"
+                  >
+                    <Trash2 size={15} />
+                  </Button>
+                </div>
+                <div className="nc-scroll flex max-h-[min(18vh,11rem)] flex-col gap-1.5 overflow-y-auto pr-0.5 sm:max-h-[min(20vh,13rem)] sm:gap-2">
+                  {sendPresets.map((p, i) => (
+                    <div
+                      key={p.id}
+                      className="flex gap-1.5 rounded-md border border-divider/60 bg-default-50/50 p-1.5 dark:bg-default-100/10 sm:gap-2 sm:p-2"
+                    >
+                      <Button
+                        isIconOnly
+                        variant="ghost"
+                        size="sm"
+                        isDisabled={!canSendFinal}
+                        aria-label={t('session.playSend')}
+                        className="mt-0.5 h-8 w-8 shrink-0 text-success hover:bg-success/15 sm:h-8 sm:w-8"
+                        onPress={() => void sendPresetById(p.id)}
+                      >
+                        <Play size={16} strokeWidth={2.25} className="translate-x-px" />
+                      </Button>
+                      <div className="flex min-w-0 flex-1 flex-col gap-1">
+                        <div className="flex items-center gap-1">
+                          <span className="shrink-0 select-none font-mono text-[10px] text-warning-600/90 dark:text-warning-400/90 sm:text-xs">
+                            ###
+                          </span>
+                          <Input
+                            value={p.title}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setSendPresets((ps) => ps.map((x) => (x.id === p.id ? { ...x, title: v } : x)))
+                            }}
+                            variant="secondary"
+                            placeholder={t('session.presetTitlePlaceholder')}
+                            className="min-h-7 flex-1 border-transparent bg-transparent font-mono text-[11px] text-warning-700/95 dark:text-warning-300/90 sm:min-h-8 sm:text-xs"
+                          />
+                          {sendPresets.length > 1 ? (
+                            <Button
+                              isIconOnly
+                              size="sm"
+                              variant="ghost"
+                              aria-label={t('session.removePreset')}
+                              className="h-7 w-7 min-w-7 shrink-0 text-default-400 hover:text-danger"
+                              onPress={() =>
+                                setSendPresets((ps) => {
+                                  if (ps.length <= 1) return ps
+                                  return ps.filter((x) => x.id !== p.id)
+                                })
+                              }
+                            >
+                              <Trash2 size={13} />
+                            </Button>
+                          ) : null}
+                        </div>
+                        <TextArea
+                          id={i === 0 ? `${idPrefix}-preset-0` : undefined}
+                          value={p.body}
                           onChange={(e) => {
-                            const v = e.target.value
-                            setSendPresets((ps) => ps.map((x) => (x.id === p.id ? { ...x, title: v } : x)))
+                            const v = sendAscii ? e.target.value : normalizeHexInput(e.target.value)
+                            setSendPresets((ps) => ps.map((x) => (x.id === p.id ? { ...x, body: v } : x)))
                           }}
                           variant="secondary"
-                          placeholder={t('session.presetTitlePlaceholder')}
-                          className="min-h-8 flex-1 border-transparent bg-transparent font-mono text-xs text-warning-700/95 dark:text-warning-300/90"
+                          className="nc-selectable min-h-[2.75rem] resize-y font-mono text-[11px] leading-snug sm:min-h-[3rem] sm:text-xs sm:leading-relaxed"
+                          placeholder={
+                            sendAscii ? t('session.payloadPlaceholder') : t('session.payloadPlaceholderHex')
+                          }
                         />
-                        {sendPresets.length > 1 ? (
-                          <Button
-                            isIconOnly
-                            size="sm"
-                            variant="ghost"
-                            isDisabled={sessionRunning}
-                            aria-label={t('session.removePreset')}
-                            className="shrink-0 text-default-400 hover:text-danger"
-                            onPress={() =>
-                              setSendPresets((ps) => {
-                                if (ps.length <= 1) return ps
-                                return ps.filter((x) => x.id !== p.id)
-                              })
-                            }
-                          >
-                            <Trash2 size={14} />
-                          </Button>
-                        ) : null}
                       </div>
-                      <TextArea
-                        id={i === 0 ? `${idPrefix}-preset-0` : undefined}
-                        value={p.body}
-                        disabled={sessionRunning}
-                        onChange={(e) => {
-                          const v = e.target.value
-                          setSendPresets((ps) => ps.map((x) => (x.id === p.id ? { ...x, body: v } : x)))
-                        }}
-                        variant="secondary"
-                        className="nc-selectable min-h-[4.5rem] resize-y font-mono text-xs leading-relaxed"
-                        placeholder={t('session.payloadPlaceholder')}
-                      />
                     </div>
-                  </div>
-                ))}
-                <Button
-                  fullWidth
-                  variant="outline"
-                  size="sm"
-                  isDisabled={sessionRunning}
-                  className="border-dashed border-default-400/50 text-default-600"
-                  onPress={() =>
-                    setSendPresets((ps) => [...ps, { id: newSendPresetId(), title: '', body: '' }])
-                  }
-                >
-                  <Plus size={14} className="mr-1 shrink-0" />
-                  {t('session.addPreset')}
-                </Button>
-              </div>
-            </div>
-            {err ? (
-              <Text size="sm" variant="danger">
-                {err}
-              </Text>
-            ) : null}
-            <div className="flex flex-col gap-2 border-t border-divider bg-default-100/30 pt-2 sm:flex-row sm:items-center sm:justify-between">
+                  ))}
+                  <Button
+                    fullWidth
+                    variant="outline"
+                    size="sm"
+                    className="min-h-7 border-dashed border-default-400/50 text-[11px] text-default-600 sm:min-h-8 sm:text-xs"
+                    onPress={() =>
+                      setSendPresets((ps) => [...ps, { id: newSendPresetId(), title: '', body: '' }])
+                    }
+                  >
+                    <Plus size={13} className="mr-1 shrink-0" />
+                    {t('session.addPreset')}
+                  </Button>
+                </div>
+                {err ? (
+                  <Text size="sm" variant="danger" className="pt-0.5">
+                    {err}
+                  </Text>
+                ) : null}
+              </Card.Content>
+            </Card>
+            <div className="flex flex-col gap-1.5 border-t border-divider/80 bg-default-100/25 px-0.5 pt-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-2 sm:bg-default-100/30 sm:pt-2">
               <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-[10px] text-default-600 tabular-nums sm:flex sm:flex-wrap sm:text-[11px]">
                 <span>
                   <span className="text-default-400">rx_pkt</span> {stats.rx_pkts}
