@@ -17,6 +17,11 @@ body {
   user-select: none; /* 桌面应用常用 */
 }
 
+.nc-workspace ::selection,
+.nc-workspace *::selection {
+  background: rgb(0 111 238 / 0.3);
+}
+
 /* NetOcto 组件局部样式 */
 .nc-root {
   font-feature-settings: "tnum" 1, "lnum" 1;
@@ -108,6 +113,30 @@ body {
 .nc-selectable,
 .nc-selectable * {
   user-select: text;
+}
+
+/* Align with redesign: thin neutral scrollbar */
+.custom-scrollbar {
+  scrollbar-color: #3f3f46 transparent;
+  scrollbar-width: thin;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
 }
 
 /* 自定义滚动条 */

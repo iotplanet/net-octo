@@ -1,4 +1,4 @@
-import { Button, Header, Modal, Radio, RadioGroup, Separator, Surface, Text, useOverlayState } from '@heroui/react'
+import { Button, Modal, Radio, RadioGroup, Text, useOverlayState } from '@heroui/react'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { Plus, Settings, X } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
@@ -72,99 +72,85 @@ export default function NetOctoApp() {
   const displayTitle = (id: string) => tabMeta[id]?.tabTitle ?? (id === 'main' ? t('app.mainTab') : id.slice(0, 12))
 
   return (
-    <div className="nc-root flex h-dvh min-h-0 flex-col bg-background text-foreground">
-      <Surface
-        variant="default"
-        className="flex shrink-0 flex-col border-b border-divider bg-content1 shadow-sm"
-      >
-        <Header className="flex h-10 items-center justify-between gap-3 border-b border-divider/60 px-3 py-0 sm:h-11 sm:px-4">
-          <div className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
-            <Text size="sm" className="truncate font-semibold leading-none tracking-tight">
-              NetOcto
-            </Text>
-            <Text
-              size="xs"
-              variant="muted"
-              className="max-w-full truncate font-mono text-[10px] text-default-500 sm:max-w-[14rem] sm:rounded-md sm:border sm:border-default-200 sm:bg-default-100 sm:px-2 sm:py-0.5"
-              title={t('app.webviewTitle')}
-            >
-              {webviewLabel}
-            </Text>
-          </div>
-          <Button
-            isIconOnly
-            variant="ghost"
-            size="sm"
-            aria-label={t('app.settings')}
-            className="shrink-0 text-default-500"
-            onPress={() => void openSettings()}
-          >
-            <Settings size={16} />
-          </Button>
-        </Header>
-
-        <div className="flex min-h-9 items-center gap-1.5 overflow-x-auto border-b border-transparent px-2 py-1 sm:px-2.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1">
+    <div className="nc-workspace nc-root flex h-dvh min-h-0 flex-col bg-[#0a0a0b] font-sans text-zinc-100 antialiased selection:bg-[#006FEE]/30">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800/60 bg-[#0a0a0b] px-3 py-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-xl border border-zinc-800/60 bg-[#18181b] p-1 shadow-sm custom-scrollbar">
             {tabs.map((tab) => {
-              const active = tab.id === activeTabId
+              const isActive = tab.id === activeTabId
               const running = tabMeta[tab.id]?.running ?? false
               return (
                 <div
                   key={tab.id}
-                  className={`flex max-w-[14rem] shrink-0 items-stretch overflow-hidden rounded-md border transition-colors ${
-                    active
-                      ? 'border-primary/50 bg-primary/10 shadow-sm'
-                      : 'border-transparent bg-default-100/70 hover:border-default-200 hover:bg-default-100'
+                  role="tab"
+                  tabIndex={0}
+                  aria-selected={isActive}
+                  className={`flex max-w-[14rem] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                    isActive
+                      ? 'bg-[#27272a] text-zinc-100 shadow-sm'
+                      : 'text-zinc-400 hover:bg-[#27272a]/50 hover:text-zinc-200'
                   }`}
+                  onClick={() => setActiveTabId(tab.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setActiveTabId(tab.id)
+                    }
+                  }}
                 >
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={`h-7 min-w-0 max-w-[11rem] flex-1 justify-start gap-2 rounded-none px-2 font-medium sm:h-8 sm:max-w-[12rem] sm:px-2.5 ${
-                      active ? 'text-foreground' : 'text-default-600'
-                    }`}
-                    onPress={() => setActiveTabId(tab.id)}
-                  >
-                    <span
-                      className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full sm:h-2 sm:w-2 ${
-                        running ? 'bg-success shadow-sm' : 'bg-default-400'
-                      }`}
-                    />
-                    <span className="truncate font-mono text-[11px] tracking-tight sm:text-xs">{displayTitle(tab.id)}</span>
-                  </Button>
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full shadow-sm ${running ? 'bg-[#17c964] shadow-[#17c964]/40' : 'bg-zinc-600'}`}
+                  />
+                  <span className="min-w-0 truncate font-mono tracking-tight">{displayTitle(tab.id)}</span>
                   {tabs.length > 1 ? (
-                    <>
-                      <Separator orientation="vertical" className="h-auto min-h-0 self-stretch bg-divider" />
-                      <Button
-                        isIconOnly
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 w-7 min-w-7 shrink-0 rounded-none text-default-500 hover:text-danger sm:h-8 sm:w-8 sm:min-w-8"
-                        aria-label={t('app.closeTab')}
-                        onPress={() => void closeTab(tab.id)}
-                      >
-                        <X size={13} strokeWidth={2.5} />
-                      </Button>
-                    </>
+                    <button
+                      type="button"
+                      className="-mr-0.5 ml-0.5 rounded p-0.5 text-zinc-500 transition-colors hover:bg-zinc-700/50 hover:text-red-400"
+                      aria-label={t('app.closeTab')}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void closeTab(tab.id)
+                      }}
+                    >
+                      <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+                    </button>
                   ) : null}
                 </div>
               )
             })}
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label={t('app.newTab')}
+              className="ml-0.5 h-auto min-w-0 shrink-0 px-2 py-1.5 text-zinc-400 hover:text-white data-[hover=true]:bg-[#27272a]/50"
+              onPress={addTab}
+            >
+              <Plus size={14} />
+            </Button>
           </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Text
+            size="xs"
+            className="hidden max-w-[12rem] truncate font-mono text-[10px] text-zinc-500 sm:block"
+            title={t('app.webviewTitle')}
+          >
+            {webviewLabel}
+          </Text>
           <Button
             isIconOnly
             size="sm"
-            variant="secondary"
-            className="shrink-0"
-            aria-label={t('app.newTab')}
-            onPress={addTab}
+            variant="ghost"
+            aria-label={t('app.settings')}
+            className="h-auto min-w-0 rounded-xl border border-zinc-800/60 bg-[#18181b] p-1.5 text-zinc-400 shadow-sm hover:text-zinc-100 data-[hover=true]:bg-[#27272a]"
+            onPress={() => void openSettings()}
           >
-            <Plus size={16} />
+            <Settings size={14} />
           </Button>
         </div>
-      </Surface>
-
-      <div className="flex min-h-0 flex-1 flex-col bg-default-50/40 p-2 sm:bg-default-50/50 sm:p-2.5">
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {tabs.map((tab) => (
           <NetOctoSession
             key={tab.id}
@@ -175,7 +161,6 @@ export default function NetOctoApp() {
           />
         ))}
       </div>
-
       {inTauri ? null : (
         <Modal state={settingsModal}>
           <Modal.Backdrop />
