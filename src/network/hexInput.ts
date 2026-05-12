@@ -34,7 +34,19 @@ function formatHexEditorLine(line: string): string {
   const t = line.trim()
   if (t.startsWith('//')) return line
   const idx = line.indexOf('//')
-  if (idx === -1) return normalizeHexInput(line)
+  if (idx === -1) {
+    // 尚未打成 `//` 时若已有单个 `/`（常见于正在输入行尾或整行注释），不可整行 normalize，否则会删掉 `/`
+    const slashIdx = line.indexOf('/')
+    if (slashIdx !== -1) {
+      const head = line.slice(0, slashIdx)
+      const tail = line.slice(slashIdx)
+      const norm = normalizeHexInput(head)
+      if (!norm) return line
+      const joiner = tail.startsWith(' ') ? '' : ' '
+      return `${norm}${joiner}${tail}`
+    }
+    return normalizeHexInput(line)
+  }
   const head = line.slice(0, idx).trimEnd()
   const tail = line.slice(idx)
   const norm = normalizeHexInput(head)
