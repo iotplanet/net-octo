@@ -43,7 +43,7 @@ jobs:
           cache: pnpm
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --allowed-dep-scripts=esbuild
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
