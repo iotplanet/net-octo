@@ -26,11 +26,11 @@ jobs:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: ""
-          # macOS Intel: 使用较旧的镜像 (x86_64) 确保兼容性
+          # macOS Intel
           - platform: macos-13
             target: x86_64-apple-darwin
             args: "--target x86_64-apple-darwin"
-          # macOS Apple Silicon: 使用 macos-14 (M1 芯片原生环境)
+          # macOS Apple Silicon
           - platform: macos-14
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
@@ -40,26 +40,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/node-setup@v4
-        with:
-          node-version: lts/*
-
+      # 1. 安装 pnpm (需要在 setup-node 之前，以便 setup-node 可以处理缓存)
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
           version: 8
 
+      # 2. 设置 Node.js 环境 (修正了名称: setup-node)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'pnpm' # 开启 pnpm 缓存
+
+      # 3. 设置 Rust 环境
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
+      # 4. 缓存 Rust 编译产物
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
+      # 5. 安装 Linux 依赖
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -67,9 +73,11 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
           sudo apt-get install -f
 
+      # 6. 安装前端依赖
       - name: Install frontend dependencies
         run: pnpm install
 
+      # 7. 构建并发布
       - name: Build and Release
         uses: tauri-apps/tauri-action@v0
         env:
