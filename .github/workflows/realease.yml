@@ -18,8 +18,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # --- Linux (x86_64) ---
           - os: ubuntu-latest
             platform: linux
+            target: x86_64-unknown-linux-gnu
             deps: |
               sudo apt-get update
               sudo apt-get install -y \
@@ -30,11 +32,29 @@ jobs:
                 libsoup-3.0-dev \
                 libjavascriptcoregtk-4.1-dev \
                 patchelf
+
+          # --- macOS Apple Silicon (M1/M2/M3) ---
           - os: macos-latest
             platform: macos
+            target: aarch64-apple-darwin
             deps: ''
+
+          # --- macOS Intel ---
+          - os: macos-13
+            platform: macos
+            target: x86_64-apple-darwin
+            deps: ''
+
+          # --- Windows x64 ---
           - os: windows-latest
             platform: windows
+            target: x86_64-pc-windows-msvc
+            deps: ''
+
+          # --- Windows ARM64 (骁龙 X Elite / Surface) ---
+          - os: windows-latest
+            platform: windows
+            target: aarch64-pc-windows-msvc
             deps: ''
 
     runs-on: ${{ matrix.os }}
@@ -43,17 +63,21 @@ jobs:
       # 1. 检出代码
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 1  # 浅克隆，加快检出速度
+          fetch-depth: 1
 
-      # 2. 安装 Rust 工具链（放在前面）
+      # 2. 安装 Rust 工具链 (增加 targets 参数)
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       # 3. 设置 Rust 缓存
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # 增加 key 区分不同 target 缓存
+          key: ${{ matrix.target }}
 
       # 4. 安装 pnpm（在 setup-node 之前，避免 Node.js 自带 npm 干扰）
       - name: Setup pnpm
@@ -71,37 +95,34 @@ jobs:
           # 注意：pnpm 缓存必须在 setup-node 之后配置
           cache: pnpm
 
-      # 6. 检查 Node.js 和 pnpm 版本
-      - name: Check versions
-        run: |
-          node --version
-          pnpm --version
-          npm --version
-      # 7. 安装系统依赖
+      # 6. 安装系统依赖
       - name: Install system dependencies
         if: matrix.deps != ''
         run: ${{ matrix.deps }}
 
-      # 8. 安装前端依赖 - 关键：在 CI 环境中使用 --unsafe-perm
+      # 7. 安装前端依赖
       - name: Install frontend dependencies
-        # 在 CI 环境中，使用 --unsafe-perm 是安全的
-        run: |
-          pnpm install --frozen-lockfile
-      # 9. 构建 Tauri 2 应用
+        run: pnpm install --frozen-lockfile
+
+      # 8. 构建 Tauri 2 应用 (增加 --target 参数)
       - name: Build Tauri 2 application
-        run: pnpm tauri build
+        run: pnpm tauri build --target ${{ matrix.target }}
         env:
           # 可选的 Tauri 代码签名配置
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
 
-      # 10. 上传构建产物
+      # 9. 上传构建产物
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
-          name: bundle-${{ matrix.platform }}
+          # 使用 target 命名避免 artifact 名字冲突
+          name: bundle-${{ matrix.target }}
+          # 产物路径在指定 target 后会变更为 target/${target}/release/bundle
           path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/
             src-tauri/target/release/bundle/
+
   create-release:
     needs: [build]
     runs-on: ubuntu-latest
