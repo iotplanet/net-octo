@@ -23,13 +23,15 @@ jobs:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: ""
-          - platform: ubuntu-22.04 # 建议锁定 22.04 比较稳定
+          - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: ""
-          - platform: macos-latest
+          # macOS Intel: 使用较旧的镜像 (x86_64) 确保兼容性
+          - platform: macos-13
             target: x86_64-apple-darwin
             args: "--target x86_64-apple-darwin"
-          - platform: macos-latest
+          # macOS Apple Silicon: 使用 macos-14 (M1 芯片原生环境)
+          - platform: macos-14
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
 
@@ -38,7 +40,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 设置环境
       - name: Setup Node.js
         uses: actions/node-setup@v4
         with:
@@ -54,14 +55,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # 2. 优化：缓存 Rust 编译产物，大幅提升后续构建速度
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      # 3. 修复：Linux 依赖安装报错
-      # 增加 --fix-broken 并清理缓存，确保 libwebkit2gtk 能正常安装
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -72,13 +70,11 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install
 
-      # 4. 构建并发布
       - name: Build and Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # 修复 tagName 逻辑：如果是手动触发则用输入值，否则用 tag 名
           tagName: ${{ github.event.inputs.version || github.ref_name }}
           releaseName: "Release ${{ github.event.inputs.version || github.ref_name }}"
           releaseBody: "Automated release from GitHub Actions"
