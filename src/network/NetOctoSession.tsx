@@ -344,7 +344,7 @@ function NcUdpTargetCard({
             <Antenna size={16} strokeWidth={2.25} />
           </Button>
         </div>
-        <Text size="xs" className="text-center leading-snug text-zinc-500">
+        <Text type="body-xs" className="text-center leading-snug text-zinc-500">
           {hint}
         </Text>
         {kind === 'multicast' ? (
@@ -1645,7 +1645,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 ) : null}
               </div>
               {err ? (
-                <Text size="sm" className="shrink-0 border-t border-zinc-800/60 bg-[#18181b] px-3 py-1.5 text-red-400">
+                <Text type="body-sm" className="shrink-0 border-t border-zinc-800/60 bg-[#18181b] px-3 py-1.5 text-red-400">
                   {err}
                 </Text>
               ) : null}
