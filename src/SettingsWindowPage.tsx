@@ -7,10 +7,10 @@ export function SettingsWindowPage() {
 
   return (
     <div className="flex min-h-dvh flex-col gap-4 bg-background p-4 text-foreground">
-      <Text size="sm" className="text-base font-semibold">
+      <Text type="body" weight="semibold" className="text-base">
         {t('settings.title')}
       </Text>
-      <Text size="sm" variant="muted">
+      <Text type="body-sm" color="muted">
         {t('settings.language')}
       </Text>
       <RadioGroup

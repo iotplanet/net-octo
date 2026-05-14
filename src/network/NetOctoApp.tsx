@@ -132,8 +132,9 @@ export default function NetOctoApp() {
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Text
-            size="xs"
-            className="hidden max-w-[12rem] truncate font-mono text-[10px] text-zinc-500 sm:block"
+            type="body-xs"
+            truncate
+            className="hidden max-w-[12rem] font-mono text-[10px] text-zinc-500 sm:block"
             title={t('app.webviewTitle')}
           >
             {webviewLabel}
@@ -170,7 +171,7 @@ export default function NetOctoApp() {
                 <Modal.Heading>{t('settings.title')}</Modal.Heading>
               </Modal.Header>
               <Modal.Body className="flex flex-col gap-2">
-                <Text size="sm" variant="muted">
+                <Text type="body-sm" color="muted">
                   {t('settings.language')}
                 </Text>
                 <RadioGroup
