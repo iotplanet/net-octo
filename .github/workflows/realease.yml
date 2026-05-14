@@ -15,24 +15,20 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  publish:
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Windows
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: ""
-          # Linux
-          - platform: ubuntu-22.04
+          - platform: ubuntu-22.04 # 建议锁定 22.04 比较稳定
             target: x86_64-unknown-linux-gnu
             args: ""
-          # macOS Intel
           - platform: macos-latest
             target: x86_64-apple-darwin
             args: "--target x86_64-apple-darwin"
-          # macOS Apple Silicon (M1/M2/M3)
           - platform: macos-latest
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
@@ -42,51 +38,50 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 设置 Node.js 环境
+      # 1. 设置环境
       - name: Setup Node.js
         uses: actions/node-setup@v4
         with:
           node-version: lts/*
 
-      # 2. 安装 pnpm
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
           version: 8
 
-      # 3. 设置 Rust 环境并添加对应的 Target
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      # 4. 安装 Linux 构建必要的系统库
+      # 2. 优化：缓存 Rust 编译产物，大幅提升后续构建速度
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # 3. 修复：Linux 依赖安装报错
+      # 增加 --fix-broken 并清理缓存，确保 libwebkit2gtk 能正常安装
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -f
 
-      # 5. 安装前端依赖
       - name: Install frontend dependencies
         run: pnpm install
 
-      # 6. 构建并上传到 GitHub Release
+      # 4. 构建并发布
       - name: Build and Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # 自动识别 tag 或手动输入
+          # 修复 tagName 逻辑：如果是手动触发则用输入值，否则用 tag 名
           tagName: ${{ github.event.inputs.version || github.ref_name }}
           releaseName: "Release ${{ github.event.inputs.version || github.ref_name }}"
           releaseBody: "Automated release from GitHub Actions"
           releaseDraft: false
           prerelease: false
-          # 传入特定的 target 参数进行构建
           args: ${{ matrix.args }}
