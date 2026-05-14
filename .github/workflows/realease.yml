@@ -4,89 +4,144 @@ on:
   push:
     tags:
       - 'v*'
+  # 增加手动触发功能
   workflow_dispatch:
     inputs:
-      version:
+      tag_name:
         description: '发布版本号 (例如: v1.0.0)'
         required: true
         default: 'v0.1.0'
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-permissions:
-  contents: write
-
 jobs:
-  publish:
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            args: ""
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            args: ""
-          - platform: macos-13
-            target: x86_64-apple-darwin
-            args: "--target x86_64-apple-darwin"
-          - platform: macos-14
-            target: aarch64-apple-darwin
-            args: "--target aarch64-apple-darwin"
+          - os: ubuntu-latest
+            platform: linux
+            deps: |
+              sudo apt-get update
+              sudo apt-get install -y \
+                libwebkit2gtk-4.1-dev \
+                libgtk-3-dev \
+                libayatana-appindicator3-dev \
+                librsvg2-dev \
+                libsoup-3.0-dev \
+                libjavascriptcoregtk-4.1-dev \
+                patchelf
+          - os: macos-latest
+            platform: macos
+            deps: ''
+          - os: windows-latest
+            platform: windows
+            deps: ''
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      # 1. 检出代码
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1  # 浅克隆，加快检出速度
 
-      # 1. 设置 pnpm
-      - name: Install pnpm
+      # 2. 安装 Rust 工具链（放在前面）
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # 3. 设置 Rust 缓存
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 4. 安装 pnpm（在 setup-node 之前，避免 Node.js 自带 npm 干扰）
+      - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: latest
+          # 不自动运行 install，我们要手动控制
+          run_install: false
 
-      # 2. 设置 Node.js
+      # 5. 设置 Node.js 环境
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: 24
-          cache: 'pnpm'
+          node-version: lts/*
+          # 注意：pnpm 缓存必须在 setup-node 之后配置
+          cache: pnpm
 
-      # 3. 设置 Rust
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      # 4. Linux 依赖处理
-      - name: Install dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+      # 6. 检查 Node.js 和 pnpm 版本
+      - name: Check versions
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-          sudo apt-get install -f
+          node --version
+          pnpm --version
+          npm --version
+      # 7. 安装系统依赖
+      - name: Install system dependencies
+        if: matrix.deps != ''
+        run: ${{ matrix.deps }}
 
-      # 5. 安装前端依赖
+      # 8. 安装前端依赖 - 关键：在 CI 环境中使用 --unsafe-perm
       - name: Install frontend dependencies
-        shell: bash
-        run: pnpm install
-
-      # 6. 使用 Tauri Action 构建 (它会自动运行 build 脚本)
-      - name: Build and Release
-        uses: tauri-apps/tauri-action@v0
+        # 在 CI 环境中，使用 --unsafe-perm 是安全的
+        run: |
+          pnpm install --frozen-lockfile
+      # 9. 构建 Tauri 2 应用
+      - name: Build Tauri 2 application
+        run: pnpm tauri build
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 可选的 Tauri 代码签名配置
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      # 10. 上传构建产物
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ github.event.inputs.version || github.ref_name }}
-          releaseName: "Release ${{ github.event.inputs.version || github.ref_name }}"
-          releaseBody: "Automated release from GitHub Actions"
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+          name: bundle-${{ matrix.platform }}
+          path: |
+            src-tauri/target/release/bundle/
+  create-release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # 1. 下载所有构建产物
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: ./artifacts/
+
+      # 关键步骤：确定最终使用的 Tag 名称
+      - name: Determine Tag Name
+        id: tag_logic
+        shell: bash
+        run: |
+          # 优先使用手动输入，若为空则使用当前推送的 tag
+          FINAL_TAG="${{ github.event.inputs.tag_name }}"
+          if [ -z "$FINAL_TAG" ]; then
+            FINAL_TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$FINAL_TAG" >> $GITHUB_OUTPUT
+          echo "Using Tag: $FINAL_TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 使用上面计算出的最终 tag
+          tag_name: ${{ steps.tag_logic.outputs.tag }}
+          name: "Release ${{ steps.tag_logic.outputs.tag }}"
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.AppImage
+            artifacts/**/*.dmg
+            artifacts/**/*.msi
+            artifacts/**/*.exe
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.sig
+          draft: true
+          generate_release_notes: true
