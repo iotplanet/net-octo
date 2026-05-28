@@ -43,6 +43,33 @@ export interface PersistedSettings {
   sendPresets?: SendPreset[]
   /** Preset `id` used when loop send is enabled */
   loopPresetId?: string
+  /** Output log vs message editor split: log share of stack (0.2–0.8) */
+  centerSplitRatio?: number
+  /** TCP client: auto-reconnect after disconnect */
+  tcpAutoReconnect?: boolean
+  tcpReconnectIntervalMs?: number
+  /** 0 = unlimited reconnect attempts */
+  tcpReconnectMaxAttempts?: number
+  tcpReconnectBackoff?: boolean
+  tcpHeartbeatEnabled?: boolean
+  tcpHeartbeatIntervalMs?: number
+  tcpHeartbeatTimeoutMs?: number
+  /** Application heartbeat payload (hex, no spaces required) */
+  tcpHeartbeatHex?: string
+  /** Enable OS TCP keepalive on the socket */
+  tcpTcpKeepalive?: boolean
+}
+
+export const CENTER_SPLIT_RATIO_DEFAULT = 0.5
+export const CENTER_SPLIT_RATIO_MIN = 0.2
+export const CENTER_SPLIT_RATIO_MAX = 0.8
+export const CENTER_SPLIT_HANDLE_PX = 6
+export const CENTER_SPLIT_LOG_MIN_PX = 120
+export const CENTER_SPLIT_EDITOR_MIN_PX = 224
+
+export function clampCenterSplitRatio(r: number): number {
+  if (!Number.isFinite(r)) return CENTER_SPLIT_RATIO_DEFAULT
+  return Math.min(CENTER_SPLIT_RATIO_MAX, Math.max(CENTER_SPLIT_RATIO_MIN, r))
 }
 
 export const defaultSettings: PersistedSettings = {
@@ -64,6 +91,30 @@ export const defaultSettings: PersistedSettings = {
   autoScroll: true,
   sendPresets: [{ id: 'preset-1', title: '', body: '' }],
   loopPresetId: 'preset-1',
+  centerSplitRatio: CENTER_SPLIT_RATIO_DEFAULT,
+  tcpAutoReconnect: true,
+  tcpReconnectIntervalMs: 3000,
+  tcpReconnectMaxAttempts: 0,
+  tcpReconnectBackoff: true,
+  tcpHeartbeatEnabled: false,
+  tcpHeartbeatIntervalMs: 30_000,
+  tcpHeartbeatTimeoutMs: 90_000,
+  tcpHeartbeatHex: '00',
+  tcpTcpKeepalive: false,
+}
+
+export function tcpClientLinkInvokeFields(s: PersistedSettings) {
+  return {
+    autoReconnect: s.tcpAutoReconnect ?? defaultSettings.tcpAutoReconnect,
+    reconnectIntervalMs: s.tcpReconnectIntervalMs ?? defaultSettings.tcpReconnectIntervalMs,
+    reconnectMaxAttempts: s.tcpReconnectMaxAttempts ?? defaultSettings.tcpReconnectMaxAttempts,
+    reconnectBackoff: s.tcpReconnectBackoff ?? defaultSettings.tcpReconnectBackoff,
+    heartbeatEnabled: s.tcpHeartbeatEnabled ?? defaultSettings.tcpHeartbeatEnabled,
+    heartbeatIntervalMs: s.tcpHeartbeatIntervalMs ?? defaultSettings.tcpHeartbeatIntervalMs,
+    heartbeatTimeoutMs: s.tcpHeartbeatTimeoutMs ?? defaultSettings.tcpHeartbeatTimeoutMs,
+    heartbeatHex: (s.tcpHeartbeatHex ?? defaultSettings.tcpHeartbeatHex ?? '00').trim(),
+    tcpKeepalive: s.tcpTcpKeepalive ?? defaultSettings.tcpTcpKeepalive,
+  }
 }
 
 export function loadSettings(tabId: string): PersistedSettings {

@@ -1,6 +1,9 @@
 //! NetOcto: TCP server/client + UDP server/client.
 
+use crate::tcp_client_link;
+
 use chrono::Local;
+use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -73,7 +76,7 @@ pub struct NcState {
     udp_out: Arc<tokio::sync::Mutex<Option<UdpOutTx>>>,
 }
 
-struct SessionHandle {
+pub(crate) struct SessionHandle {
     shutdown_tx: watch::Sender<bool>,
     join: tokio::task::JoinHandle<()>,
 }
@@ -196,7 +199,7 @@ fn parse_escapes_ascii(input: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-async fn emit_clients_tcp(
+pub(crate) async fn emit_clients_tcp(
     app: &AppHandle,
     webview: &str,
     session_id: &str,
@@ -237,7 +240,7 @@ async fn emit_clients_vec(
     );
 }
 
-async fn emit_log(
+pub(crate) async fn emit_log(
     app: &AppHandle,
     webview: &str,
     session_id: &str,
@@ -256,7 +259,7 @@ async fn emit_log(
     );
 }
 
-async fn emit_stats(app: &AppHandle, webview: &str, session_id: &str, stats: &Stats) {
+pub(crate) async fn emit_stats(app: &AppHandle, webview: &str, session_id: &str, stats: &Stats) {
     let s = stats.snapshot();
     let _ = app.emit_to(
         webview,
@@ -271,7 +274,7 @@ async fn emit_stats(app: &AppHandle, webview: &str, session_id: &str, stats: &St
     );
 }
 
-async fn emit_server_state(
+pub(crate) async fn emit_server_state(
     app: &AppHandle,
     webview: &str,
     session_id: &str,
@@ -289,6 +292,49 @@ async fn emit_server_state(
             "mode": mode,
         }),
     );
+}
+
+pub(crate) async fn emit_tcp_link(
+    app: &AppHandle,
+    webview: &str,
+    session_id: &str,
+    phase: &str,
+    attempt: u32,
+    max_attempts: u32,
+    next_retry_ms: u64,
+    heartbeat: &str,
+) {
+    let _ = app.emit_to(
+        webview,
+        "nc-tcp-link",
+        tcp_client_link::TcpLinkEvent {
+            session_id: session_id.to_string(),
+            phase: phase.to_string(),
+            attempt,
+            max_attempts,
+            next_retry_ms,
+            heartbeat: heartbeat.to_string(),
+        },
+    );
+}
+
+pub(crate) fn parse_heartbeat_hex(raw: &str) -> Result<Vec<u8>, String> {
+    let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact.is_empty() {
+        return Ok(Vec::new());
+    }
+    if compact.len() % 2 != 0 {
+        return Err("HEX 长度必须为偶数个字符".into());
+    }
+    hex::decode(&compact).map_err(|e| e.to_string())
+}
+
+pub(crate) fn set_stream_keepalive(stream: &TcpStream) -> std::io::Result<()> {
+    let sock = socket2::SockRef::from(stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(30))
+        .with_interval(Duration::from_secs(10));
+    sock.set_tcp_keepalive(&keepalive)
 }
 
 fn peers_to_client_info(peers: &HashMap<u64, SocketAddr>) -> Vec<ClientInfo> {
@@ -315,7 +361,7 @@ fn ensure_udp_peer(peers: &mut HashMap<u64, SocketAddr>, next: &mut u64, addr: S
     id
 }
 
-async fn client_loop(
+pub(crate) async fn client_loop(
     mut socket: TcpStream,
     id: u64,
     peer: String,
@@ -326,6 +372,8 @@ async fn client_loop(
     stats: Arc<Stats>,
     recv_hex: bool,
     clients: Arc<RwLock<HashMap<u64, ClientEntry>>>,
+    notify_session_end: Option<tokio::sync::oneshot::Sender<()>>,
+    last_rx: Option<Arc<RwLock<Instant>>>,
 ) {
     let (mut read_half, mut write_half) = socket.split();
     let mut buf = vec![0u8; 16384];
@@ -335,6 +383,9 @@ async fn client_loop(
                 match r {
                     Ok(0) => break,
                     Ok(n) => {
+                        if let Some(ref lr) = last_rx {
+                            *lr.write().await = Instant::now();
+                        }
                         stats.rx_pkts.fetch_add(1, Ordering::Relaxed);
                         stats.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                         let chunk = &buf[..n];
@@ -371,15 +422,16 @@ async fn client_loop(
     drop(g);
 
     emit_clients_tcp(&app, &webview, &session, &clients).await;
-    emit_log(
-        &app,
-        &webview,
-        &session,
-        "info",
-        format!("[{}] 客户端 #{} 已断开", peer, id),
-    )
-    .await;
+    let line = if notify_session_end.is_some() {
+        format!("[{}] 远端已断开连接", peer)
+    } else {
+        format!("[{}] 客户端 #{} 已断开", peer, id)
+    };
+    emit_log(&app, &webview, &session, "info", line).await;
     emit_stats(&app, &webview, &session, &stats).await;
+    if let Some(tx) = notify_session_end {
+        let _ = tx.send(());
+    }
 }
 
 async fn udp_server_loop(
@@ -630,7 +682,7 @@ fn preview_payload(bytes: &[u8], as_hex: bool) -> String {
     }
 }
 
-async fn clear_session_common(
+pub(crate) async fn clear_session_common(
     app: &AppHandle,
     webview: &str,
     session_id: &str,
@@ -673,6 +725,8 @@ pub enum StartSessionArgs {
         host: String,
         port: u16,
         recv_hex: bool,
+        #[serde(flatten)]
+        link: tcp_client_link::TcpClientLinkOptions,
     },
     #[serde(rename = "udp_server")]
     UdpServer {
@@ -742,6 +796,7 @@ pub async fn nc_start_session(
     let clients_c = state.clients.clone();
     let next_id = state.next_client_id.clone();
     let udp_out_slot = state.udp_out.clone();
+    let session_slot = state.session.clone();
 
     let join = match args {
         StartSessionArgs::TcpServer {
@@ -795,8 +850,10 @@ pub async fn nc_start_session(
                                         sid_t,
                                         stats_t,
                                         recv_hex,
-                                        clients_t.clone(),
-                                    ));
+                                    clients_t.clone(),
+                                    None,
+                                    None,
+                                ));
                                     {
                                         let mut g = clients_t.write().await;
                                         g.insert(
@@ -835,78 +892,28 @@ pub async fn nc_start_session(
             host,
             port,
             recv_hex,
+            link,
         } => {
             let addr_s = format!("{}:{}", host, port);
             let wv_c = wv.clone();
             let sid_c = sid.clone();
+            let session_slot_c = session_slot.clone();
+            let state_c = state.clone();
             tokio::spawn(async move {
-                emit_server_state(&app_c, &wv_c, &sid_c, true, addr_s.clone(), mode_str).await;
-                let sock = match TcpStream::connect(&addr_s).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        emit_log(&app_c, &wv_c, &sid_c, "error", format!("连接失败: {}", e)).await;
-                        emit_server_state(&app_c, &wv_c, &sid_c, false, String::new(), "idle").await;
-                        return;
-                    }
-                };
-                emit_log(
-                    &app_c,
-                    &wv_c,
-                    &sid_c,
-                    "server",
-                    format!("# TCP connected to {}", addr_s),
+                tcp_client_link::run_tcp_client_session(
+                    app_c,
+                    wv_c,
+                    sid_c,
+                    addr_s,
+                    recv_hex,
+                    link,
+                    stats_c,
+                    clients_c,
+                    session_slot_c,
+                    state_c,
+                    shutdown_rx,
                 )
                 .await;
-                emit_stats(&app_c, &wv_c, &sid_c, &stats_c).await;
-                let id = 1u64;
-                let (tx, rx) = mpsc::unbounded_channel();
-                let peer = addr_s.clone();
-                let wv_cc = wv_c.clone();
-                let sid_cc = sid_c.clone();
-                let task = tokio::spawn(client_loop(
-                    sock,
-                    id,
-                    peer.clone(),
-                    rx,
-                    app_c.clone(),
-                    wv_cc,
-                    sid_cc,
-                    stats_c.clone(),
-                    recv_hex,
-                    clients_c.clone(),
-                ));
-                {
-                    let mut g = clients_c.write().await;
-                    g.insert(
-                        id,
-                        ClientEntry {
-                            tx,
-                            peer,
-                            task,
-                        },
-                    );
-                }
-                emit_clients_tcp(&app_c, &wv_c, &sid_c, &clients_c).await;
-
-                let mut shutdown_rx = shutdown_rx;
-                loop {
-                    if shutdown_rx.changed().await.is_err() {
-                        break;
-                    }
-                    if *shutdown_rx.borrow() {
-                        break;
-                    }
-                }
-                {
-                    let mut g = clients_c.write().await;
-                    if let Some(e) = g.remove(&id) {
-                        e.task.abort();
-                    }
-                }
-                emit_clients_tcp(&app_c, &wv_c, &sid_c, &clients_c).await;
-                emit_log(&app_c, &wv_c, &sid_c, "server", "# TCP client session closed".into()).await;
-                emit_server_state(&app_c, &wv_c, &sid_c, false, String::new(), "idle").await;
-                emit_stats(&app_c, &wv_c, &sid_c, &stats_c).await;
             })
         }
         StartSessionArgs::UdpServer {

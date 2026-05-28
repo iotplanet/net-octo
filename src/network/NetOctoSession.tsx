@@ -30,14 +30,17 @@ import type { ReactNode } from 'react'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n, type Translate } from '../i18n'
 import {
+  clampCenterSplitRatio,
   defaultSettings,
   loadSettings,
   type PersistedSettings,
   type SendPreset,
   type SessionMode,
+  tcpClientLinkInvokeFields,
   type UdpTargetKind,
   saveSettings,
 } from './persist'
+import { useVerticalSplitDrag } from './useVerticalSplit'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
   compactHexUpper,
@@ -46,6 +49,7 @@ import {
   formatHexEditorBody,
   isCompleteHexPayload,
 } from './hexInput'
+import { useSessionEditorBridge } from './sessionEditorBridge'
 
 interface LogLine {
   ts: string
@@ -154,12 +158,39 @@ function logBadgeForKind(kind: string): { label: string; className: string } {
       return { label: 'SRV', className: 'text-violet-300 bg-violet-500/10 border border-violet-500/25' }
     case 'error':
       return { label: 'ERR', className: 'text-red-400 bg-red-500/10 border border-red-500/25' }
+    case 'info':
+      return { label: 'INF', className: 'text-sky-300 bg-sky-500/10 border border-sky-500/25' }
     default:
       return { label: 'LOG', className: 'text-zinc-400 bg-zinc-800/80 border border-zinc-700/50' }
   }
 }
 
-function formatSessionTabTitle(mode: SessionMode, running: boolean, localPort: string, idleLabel: string): string {
+type TcpLinkPhase = 'idle' | 'connected' | 'reconnecting' | 'disconnected' | 'failed' | 'stopped'
+type TcpHeartbeatState = 'off' | 'ok' | 'waiting' | 'timeout'
+
+interface TcpLinkState {
+  phase: TcpLinkPhase
+  attempt: number
+  maxAttempts: number
+  nextRetryMs: number
+  heartbeat: TcpHeartbeatState
+}
+
+const TCP_LINK_IDLE: TcpLinkState = {
+  phase: 'idle',
+  attempt: 0,
+  maxAttempts: 0,
+  nextRetryMs: 0,
+  heartbeat: 'off',
+}
+
+function formatSessionTabTitle(
+  mode: SessionMode,
+  running: boolean,
+  localPort: string,
+  idleLabel: string,
+  reconnectingLabel?: string,
+): string {
   const prefix =
     mode === 'tcp_server'
       ? 'TCP-S'
@@ -168,7 +199,38 @@ function formatSessionTabTitle(mode: SessionMode, running: boolean, localPort: s
         : mode === 'udp_server'
           ? 'UDP-S'
           : 'UDP-C'
+  if (reconnectingLabel) return `${prefix} (${reconnectingLabel})`
   return running ? `${prefix} :${localPort}` : `${prefix} (${idleLabel})`
+}
+
+function tcpLinkPhaseLabel(t: Translate, phase: TcpLinkPhase): string {
+  switch (phase) {
+    case 'connected':
+      return t('session.tcpLink.connected')
+    case 'reconnecting':
+      return t('session.tcpLink.reconnecting')
+    case 'disconnected':
+      return t('session.tcpLink.disconnected')
+    case 'failed':
+      return t('session.tcpLink.failed')
+    case 'stopped':
+      return t('session.tcpLink.stopped')
+    default:
+      return t('session.tcpLink.idle')
+  }
+}
+
+function tcpHeartbeatLabel(t: Translate, hb: TcpHeartbeatState): string {
+  switch (hb) {
+    case 'ok':
+      return t('session.tcpLink.hbOk')
+    case 'waiting':
+      return t('session.tcpLink.hbWaiting')
+    case 'timeout':
+      return t('session.tcpLink.hbTimeout')
+    default:
+      return t('session.tcpLink.hbOff')
+  }
 }
 
 function NcConfigCard({
@@ -415,17 +477,206 @@ function NcUdpTargetCard({
   )
 }
 
+function NcTcpLinkCard({
+  idPrefix,
+  t,
+  sessionRunning,
+  autoReconnect,
+  onAutoReconnect,
+  reconnectIntervalMs,
+  onReconnectIntervalMs,
+  reconnectMaxAttempts,
+  onReconnectMaxAttempts,
+  reconnectBackoff,
+  onReconnectBackoff,
+  heartbeatEnabled,
+  onHeartbeatEnabled,
+  heartbeatIntervalMs,
+  onHeartbeatIntervalMs,
+  heartbeatTimeoutMs,
+  onHeartbeatTimeoutMs,
+  heartbeatHex,
+  onHeartbeatHex,
+  tcpKeepalive,
+  onTcpKeepalive,
+  link,
+}: {
+  idPrefix: string
+  t: Translate
+  sessionRunning: boolean
+  autoReconnect: boolean
+  onAutoReconnect: (v: boolean) => void
+  reconnectIntervalMs: string
+  onReconnectIntervalMs: (v: string) => void
+  reconnectMaxAttempts: string
+  onReconnectMaxAttempts: (v: string) => void
+  reconnectBackoff: boolean
+  onReconnectBackoff: (v: boolean) => void
+  heartbeatEnabled: boolean
+  onHeartbeatEnabled: (v: boolean) => void
+  heartbeatIntervalMs: string
+  onHeartbeatIntervalMs: (v: string) => void
+  heartbeatTimeoutMs: string
+  onHeartbeatTimeoutMs: (v: string) => void
+  heartbeatHex: string
+  onHeartbeatHex: (v: string) => void
+  tcpKeepalive: boolean
+  onTcpKeepalive: (v: boolean) => void
+  link: TcpLinkState
+}) {
+  const phaseText = tcpLinkPhaseLabel(t, link.phase)
+  const hbText = tcpHeartbeatLabel(t, link.heartbeat)
+  const attemptHint =
+    link.phase === 'reconnecting' && link.attempt > 0
+      ? link.maxAttempts === 0
+        ? t('session.tcpLink.attemptUnlimited').replace('{n}', String(link.attempt))
+        : t('session.tcpLink.attemptOf')
+            .replace('{n}', String(link.attempt))
+            .replace('{max}', String(link.maxAttempts))
+      : null
+  const retryHint =
+    link.phase === 'reconnecting' && link.nextRetryMs > 0
+      ? t('session.tcpLink.retryIn').replace('{ms}', String(link.nextRetryMs))
+      : null
+
+  return (
+    <NcConfigCard title={t('session.tcpLink.title')}>
+      <div className="rounded-lg border border-zinc-800/80 bg-[#141416] px-2.5 py-2 font-mono text-[10px] leading-relaxed text-zinc-400">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="text-zinc-500">{t('session.tcpLink.status')}</span>
+          <span
+            className={
+              link.phase === 'connected'
+                ? 'text-[#17c964]'
+                : link.phase === 'reconnecting'
+                  ? 'text-amber-400'
+                  : link.phase === 'failed'
+                    ? 'text-red-400'
+                    : 'text-zinc-300'
+            }
+          >
+            {phaseText}
+          </span>
+        </div>
+        {attemptHint ? <div className="mt-0.5 text-zinc-500">{attemptHint}</div> : null}
+        {retryHint ? <div className="mt-0.5 text-zinc-500">{retryHint}</div> : null}
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="text-zinc-500">{t('session.tcpLink.heartbeat')}</span>
+          <span
+            className={
+              link.heartbeat === 'ok'
+                ? 'text-[#17c964]'
+                : link.heartbeat === 'timeout'
+                  ? 'text-red-400'
+                  : link.heartbeat === 'waiting'
+                    ? 'text-amber-400'
+                    : 'text-zinc-500'
+            }
+          >
+            {hbText}
+          </span>
+        </div>
+      </div>
+      <NcCheckboxRow
+        checked={autoReconnect}
+        onChange={onAutoReconnect}
+        label={t('session.tcpLink.autoReconnect')}
+        disabled={sessionRunning}
+      />
+      {autoReconnect ? (
+        <>
+          <NcFieldLabel htmlFor={`${idPrefix}-tcp-reint`}>{t('session.tcpLink.reconnectInterval')}</NcFieldLabel>
+          <Input
+            id={`${idPrefix}-tcp-reint`}
+            value={reconnectIntervalMs}
+            disabled={sessionRunning}
+            onChange={(e) => onReconnectIntervalMs(e.target.value)}
+            variant="secondary"
+            className={ZINC_INPUT}
+            inputMode="numeric"
+          />
+          <NcFieldLabel htmlFor={`${idPrefix}-tcp-remax`}>{t('session.tcpLink.reconnectMax')}</NcFieldLabel>
+          <Input
+            id={`${idPrefix}-tcp-remax`}
+            value={reconnectMaxAttempts}
+            disabled={sessionRunning}
+            onChange={(e) => onReconnectMaxAttempts(e.target.value)}
+            variant="secondary"
+            className={ZINC_INPUT}
+            inputMode="numeric"
+            placeholder={t('session.tcpLink.reconnectMaxPlaceholder')}
+          />
+          <NcCheckboxRow
+            checked={reconnectBackoff}
+            onChange={onReconnectBackoff}
+            label={t('session.tcpLink.reconnectBackoff')}
+            disabled={sessionRunning}
+          />
+        </>
+      ) : null}
+      <NcCheckboxRow
+        checked={heartbeatEnabled}
+        onChange={onHeartbeatEnabled}
+        label={t('session.tcpLink.heartbeatEnable')}
+        disabled={sessionRunning}
+      />
+      {heartbeatEnabled ? (
+        <>
+          <NcFieldLabel htmlFor={`${idPrefix}-tcp-hbint`}>{t('session.tcpLink.heartbeatInterval')}</NcFieldLabel>
+          <Input
+            id={`${idPrefix}-tcp-hbint`}
+            value={heartbeatIntervalMs}
+            disabled={sessionRunning}
+            onChange={(e) => onHeartbeatIntervalMs(e.target.value)}
+            variant="secondary"
+            className={ZINC_INPUT}
+            inputMode="numeric"
+          />
+          <NcFieldLabel htmlFor={`${idPrefix}-tcp-hbto`}>{t('session.tcpLink.heartbeatTimeout')}</NcFieldLabel>
+          <Input
+            id={`${idPrefix}-tcp-hbto`}
+            value={heartbeatTimeoutMs}
+            disabled={sessionRunning}
+            onChange={(e) => onHeartbeatTimeoutMs(e.target.value)}
+            variant="secondary"
+            className={ZINC_INPUT}
+            inputMode="numeric"
+          />
+          <NcFieldLabel htmlFor={`${idPrefix}-tcp-hbhex`}>{t('session.tcpLink.heartbeatHex')}</NcFieldLabel>
+          <Input
+            id={`${idPrefix}-tcp-hbhex`}
+            value={heartbeatHex}
+            disabled={sessionRunning}
+            onChange={(e) => onHeartbeatHex(e.target.value)}
+            variant="secondary"
+            className={`font-mono ${ZINC_INPUT}`}
+            placeholder="00"
+          />
+        </>
+      ) : null}
+      <NcCheckboxRow
+        checked={tcpKeepalive}
+        onChange={onTcpKeepalive}
+        label={t('session.tcpLink.tcpKeepalive')}
+        disabled={sessionRunning}
+      />
+    </NcConfigCard>
+  )
+}
+
 function NcCheckboxRow({
   checked,
   onChange,
   label,
+  disabled,
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   label: string
+  disabled?: boolean
 }) {
   return (
-    <Checkbox isSelected={checked} onChange={onChange} className="mt-0 p-0">
+    <Checkbox isSelected={checked} isDisabled={disabled} onChange={onChange} className="mt-0 p-0">
       {({ isSelected }) => (
         <div className="flex items-start gap-2">
           <Checkbox.Control
@@ -461,6 +712,7 @@ interface SendHistoryItem {
 
 export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: NetOctoSessionProps) {
   const { t } = useI18n()
+  const { register, unregister } = useSessionEditorBridge()
   const idPrefix = useMemo(() => sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'), [sessionId])
   const persisted = useRef(loadSettings(sessionId))
   const [mode, setMode] = useState<SessionMode>(persisted.current.mode)
@@ -477,11 +729,48 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   const [wrapRecv, setWrapRecv] = useState(persisted.current.wrapRecv)
   const [hideRecv, setHideRecv] = useState(persisted.current.hideRecv)
   const [autoScroll, setAutoScroll] = useState(persisted.current.autoScroll)
+  const [centerSplitRatio, setCenterSplitRatio] = useState(() =>
+    clampCenterSplitRatio(persisted.current.centerSplitRatio ?? defaultSettings.centerSplitRatio ?? 0.5),
+  )
+
+  const { containerRef: centerSplitRef, logPaneStyle, editorPaneStyle, separatorProps } = useVerticalSplitDrag(
+    centerSplitRatio,
+    setCenterSplitRatio,
+  )
 
   const [sendAscii, setSendAscii] = useState(persisted.current.sendAscii)
   const [parseEscapes, setParseEscapes] = useState(persisted.current.parseEscapes)
   const [loopSend, setLoopSend] = useState(persisted.current.loopSend)
   const [loopMs, setLoopMs] = useState(persisted.current.loopMs)
+
+  const [tcpAutoReconnect, setTcpAutoReconnect] = useState(
+    persisted.current.tcpAutoReconnect ?? defaultSettings.tcpAutoReconnect ?? true,
+  )
+  const [tcpReconnectIntervalMs, setTcpReconnectIntervalMs] = useState(
+    String(persisted.current.tcpReconnectIntervalMs ?? defaultSettings.tcpReconnectIntervalMs ?? 3000),
+  )
+  const [tcpReconnectMaxAttempts, setTcpReconnectMaxAttempts] = useState(
+    String(persisted.current.tcpReconnectMaxAttempts ?? defaultSettings.tcpReconnectMaxAttempts ?? 0),
+  )
+  const [tcpReconnectBackoff, setTcpReconnectBackoff] = useState(
+    persisted.current.tcpReconnectBackoff ?? defaultSettings.tcpReconnectBackoff ?? true,
+  )
+  const [tcpHeartbeatEnabled, setTcpHeartbeatEnabled] = useState(
+    persisted.current.tcpHeartbeatEnabled ?? defaultSettings.tcpHeartbeatEnabled ?? false,
+  )
+  const [tcpHeartbeatIntervalMs, setTcpHeartbeatIntervalMs] = useState(
+    String(persisted.current.tcpHeartbeatIntervalMs ?? defaultSettings.tcpHeartbeatIntervalMs ?? 30_000),
+  )
+  const [tcpHeartbeatTimeoutMs, setTcpHeartbeatTimeoutMs] = useState(
+    String(persisted.current.tcpHeartbeatTimeoutMs ?? defaultSettings.tcpHeartbeatTimeoutMs ?? 90_000),
+  )
+  const [tcpHeartbeatHex, setTcpHeartbeatHex] = useState(
+    persisted.current.tcpHeartbeatHex ?? defaultSettings.tcpHeartbeatHex ?? '00',
+  )
+  const [tcpTcpKeepalive, setTcpTcpKeepalive] = useState(
+    persisted.current.tcpTcpKeepalive ?? defaultSettings.tcpTcpKeepalive ?? false,
+  )
+  const [tcpLink, setTcpLink] = useState<TcpLinkState>(TCP_LINK_IDLE)
 
   const [lines, setLines] = useState<LogLine[]>([])
   const [clients, setClients] = useState<ClientInfo[]>([])
@@ -532,6 +821,32 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
 
   const editorHighlightTree = useMemo(() => messageEditorHighlightTree(loopPresetBody), [loopPresetBody])
 
+  const appendToEditor = useCallback(
+    (fragment: string) => {
+      setSendPresets((ps) =>
+        ps.map((p) => {
+          if (p.id !== loopPresetId) return p
+          const prev = p.body
+          const trimmed = fragment.trim()
+          if (!trimmed) return p
+          const needsSep = prev.length > 0 && !/\s$/.test(prev)
+          const merged = needsSep ? `${prev} ${trimmed}` : `${prev}${trimmed}`
+          return {
+            ...p,
+            body: sendAscii ? merged : formatHexEditorBody(merged),
+          }
+        }),
+      )
+    },
+    [loopPresetId, sendAscii],
+  )
+
+  useEffect(() => {
+    if (!active) return
+    register(sessionId, { appendToEditor })
+    return () => unregister(sessionId)
+  }, [active, sessionId, register, unregister, appendToEditor])
+
   const appendLine = useCallback((l: LogLine) => {
     setLines((prev) => {
       if (!showAsLog && l.kind === 'recv') return prev
@@ -560,6 +875,16 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       autoScroll,
       sendPresets,
       loopPresetId,
+      centerSplitRatio,
+      tcpAutoReconnect,
+      tcpReconnectIntervalMs: Number.parseInt(tcpReconnectIntervalMs, 10) || defaultSettings.tcpReconnectIntervalMs,
+      tcpReconnectMaxAttempts: Number.parseInt(tcpReconnectMaxAttempts, 10) || 0,
+      tcpReconnectBackoff,
+      tcpHeartbeatEnabled,
+      tcpHeartbeatIntervalMs: Number.parseInt(tcpHeartbeatIntervalMs, 10) || defaultSettings.tcpHeartbeatIntervalMs,
+      tcpHeartbeatTimeoutMs: Number.parseInt(tcpHeartbeatTimeoutMs, 10) || defaultSettings.tcpHeartbeatTimeoutMs,
+      tcpHeartbeatHex,
+      tcpTcpKeepalive,
     }
     if (saveTimer.current) globalThis.clearTimeout(saveTimer.current)
     saveTimer.current = globalThis.setTimeout(() => saveSettings(sessionId, s), 400)
@@ -586,6 +911,16 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     autoScroll,
     sendPresets,
     loopPresetId,
+    centerSplitRatio,
+    tcpAutoReconnect,
+    tcpReconnectIntervalMs,
+    tcpReconnectMaxAttempts,
+    tcpReconnectBackoff,
+    tcpHeartbeatEnabled,
+    tcpHeartbeatIntervalMs,
+    tcpHeartbeatTimeoutMs,
+    tcpHeartbeatHex,
+    tcpTcpKeepalive,
   ])
 
   useEffect(() => {
@@ -660,11 +995,15 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       }>('nc-server', (e) => {
         if (e.payload.sessionId !== sessionId) return
         setSessionRunning(e.payload.running)
+        if (!e.payload.running) {
+          setClients([])
+          setActiveMode('idle')
+          setTcpLink(TCP_LINK_IDLE)
+          return
+        }
         const m = e.payload.mode
         if (m === 'tcp_server' || m === 'tcp_client' || m === 'udp_server' || m === 'udp_client') {
           setActiveMode(m)
-        } else if (!e.payload.running) {
-          setActiveMode('idle')
         }
       })
       if (dead.v) {
@@ -672,6 +1011,30 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
         return
       }
       unlisteners.push(u4)
+      const u5 = await w.listen<{
+        sessionId: string
+        phase: string
+        attempt: number
+        maxAttempts: number
+        nextRetryMs: number
+        heartbeat: string
+      }>('nc-tcp-link', (e) => {
+        if (e.payload.sessionId !== sessionId) return
+        const phase = e.payload.phase as TcpLinkPhase
+        const heartbeat = e.payload.heartbeat as TcpHeartbeatState
+        setTcpLink({
+          phase,
+          attempt: e.payload.attempt,
+          maxAttempts: e.payload.maxAttempts,
+          nextRetryMs: e.payload.nextRetryMs,
+          heartbeat,
+        })
+      })
+      if (dead.v) {
+        u5()
+        return
+      }
+      unlisteners.push(u5)
     })()
     return () => {
       dead.v = true
@@ -685,18 +1048,81 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     }
   }, [lines, autoScroll])
 
+  const showAllSendTargets = mode === 'tcp_server' || mode === 'udp_server'
+
   useEffect(() => {
+    if (mode === 'tcp_client') {
+      if (clients.length === 0) {
+        if (sendTarget !== '') setSendTarget('')
+        return
+      }
+      const firstId = String(clients[0].id)
+      if (sendTarget === 'all' || !clients.some((c) => String(c.id) === sendTarget)) {
+        setSendTarget(firstId)
+      }
+      return
+    }
     if (sendTarget === 'all') return
     if (!clients.some((c) => String(c.id) === sendTarget)) setSendTarget('all')
-  }, [clients, sendTarget])
+  }, [mode, clients, sendTarget])
 
   const tabMode = sessionRunning && activeMode !== 'idle' ? activeMode : mode
-  const tabTitle = formatSessionTabTitle(tabMode, sessionRunning, port, t('session.tabIdle'))
+  const tcpReconnecting = tabMode === 'tcp_client' && tcpLink.phase === 'reconnecting'
+  const sessionConnected =
+    sessionRunning &&
+    (tabMode !== 'tcp_client' ||
+      tcpLink.phase === 'connected' ||
+      (clients.length > 0 && tcpLink.phase !== 'failed' && tcpLink.phase !== 'stopped'))
+  const tabTitle = formatSessionTabTitle(
+    tabMode,
+    sessionConnected,
+    port,
+    tabMode === 'tcp_client' && sessionRunning && clients.length === 0 && tcpLink.phase !== 'reconnecting'
+      ? t('session.tabDisconnected')
+      : t('session.tabIdle'),
+    tcpReconnecting ? t('session.tabReconnecting') : undefined,
+  )
+  const linkStatusLabel =
+    tabMode === 'tcp_client' && sessionRunning
+      ? tcpLinkPhaseLabel(t, tcpLink.phase)
+      : sessionConnected
+        ? 'CONNECTED'
+        : 'DISCONNECTED'
+  const linkStatusClass =
+    tabMode === 'tcp_client' && sessionRunning
+      ? tcpLink.phase === 'connected'
+        ? 'text-[#17c964]'
+        : tcpLink.phase === 'reconnecting'
+          ? 'text-amber-400'
+          : tcpLink.phase === 'failed'
+            ? 'text-red-400'
+            : 'text-zinc-500'
+      : sessionConnected
+        ? 'text-[#17c964]'
+        : 'text-zinc-500'
+  const linkDotClass =
+    tabMode === 'tcp_client' && sessionRunning
+      ? tcpLink.phase === 'connected'
+        ? 'bg-[#17c964] shadow-[0_0_6px_rgba(23,201,100,0.6)]'
+        : tcpLink.phase === 'reconnecting'
+          ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]'
+          : tcpLink.phase === 'failed'
+            ? 'bg-red-500'
+            : 'bg-zinc-600'
+      : sessionConnected
+        ? 'bg-[#17c964] shadow-[0_0_6px_rgba(23,201,100,0.6)]'
+        : 'bg-zinc-600'
+  const tabRunning =
+    sessionRunning &&
+    (tabMode !== 'tcp_client' || sessionConnected || tcpReconnecting)
   useEffect(() => {
-    onTabMeta?.(sessionId, { running: sessionRunning, tabTitle })
-  }, [sessionId, onTabMeta, sessionRunning, tabTitle])
+    onTabMeta?.(sessionId, { running: tabRunning, tabTitle })
+  }, [sessionId, onTabMeta, tabRunning, tabTitle])
 
-  const canSendLoop = sessionRunning && (clients.length > 0 || mode === 'udp_client')
+  const canSendLoop = sessionRunning && (mode === 'udp_client' || clients.length > 0)
+
+  const sendTargetForInvoke =
+    mode === 'tcp_client' && clients.length > 0 ? String(clients[0].id) : sendTarget
 
   useEffect(() => {
     if (!loopSend || !canSendLoop) {
@@ -721,7 +1147,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       void invoke('nc_send', {
         sessionId,
         webviewLabel,
-        target: r.sendTarget,
+        target: mode === 'tcp_client' && clients.length > 0 ? String(clients[0].id) : r.sendTarget,
         data,
         sendHex: !r.sendAscii,
         parseEscapes: r.sendAscii && r.parseEscapes,
@@ -731,7 +1157,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       if (loopRef.current) globalThis.clearInterval(loopRef.current)
       loopRef.current = null
     }
-  }, [loopSend, loopMs, canSendLoop, sessionId, webviewLabel])
+  }, [loopSend, loopMs, canSendLoop, sessionId, webviewLabel, mode, clients.length])
 
   const startSession = async () => {
     setErr(null)
@@ -753,8 +1179,20 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
           setErr(t('err.portRange'))
           return
         }
+        const linkFields = tcpClientLinkInvokeFields({
+          ...defaultSettings,
+          tcpAutoReconnect,
+          tcpReconnectIntervalMs: Number.parseInt(tcpReconnectIntervalMs, 10) || 3000,
+          tcpReconnectMaxAttempts: Number.parseInt(tcpReconnectMaxAttempts, 10) || 0,
+          tcpReconnectBackoff,
+          tcpHeartbeatEnabled,
+          tcpHeartbeatIntervalMs: Number.parseInt(tcpHeartbeatIntervalMs, 10) || 30_000,
+          tcpHeartbeatTimeoutMs: Number.parseInt(tcpHeartbeatTimeoutMs, 10) || 90_000,
+          tcpHeartbeatHex,
+          tcpTcpKeepalive,
+        })
         await invoke('nc_start_session', {
-          params: { ...base, mode: 'tcp_client', host: remoteHost, port: p, recvHex },
+          params: { ...base, mode: 'tcp_client', host: remoteHost, port: p, recvHex, ...linkFields },
         })
       } else if (mode === 'udp_server') {
         const p = Number.parseInt(port, 10)
@@ -844,7 +1282,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
         await invoke('nc_send', {
           sessionId,
           webviewLabel,
-          target: sendTarget,
+          target: sendTargetForInvoke,
           data,
           sendHex: !sendAscii,
           parseEscapes: sendAscii && parseEscapes,
@@ -867,7 +1305,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
         setErr(String(e))
       }
     },
-    [sendAscii, parseEscapes, sessionId, webviewLabel, sendTarget, t],
+    [sendAscii, parseEscapes, sessionId, webviewLabel, sendTargetForInvoke, t],
   )
 
   const sendPresetById = useCallback(
@@ -924,7 +1362,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
         payload: {
           sessionId,
           webviewLabel,
-          target: sendTarget === 'all' ? 'all' : String(sendTarget),
+          target: sendTargetForInvoke === 'all' ? 'all' : String(sendTargetForInvoke),
         },
       })
     } catch (e) {
@@ -1015,7 +1453,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     (tabMode === 'udp_client' ||
       (tabMode === 'udp_server' && clients.length > 0) ||
       tabMode === 'tcp_server' ||
-      tabMode === 'tcp_client')
+      (tabMode === 'tcp_client' && clients.length > 0))
 
   const resetUiDefaults = () => {
     const d = { ...defaultSettings }
@@ -1035,6 +1473,17 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     setWrapRecv(d.wrapRecv)
     setHideRecv(d.hideRecv)
     setAutoScroll(d.autoScroll)
+    setCenterSplitRatio(clampCenterSplitRatio(d.centerSplitRatio ?? defaultSettings.centerSplitRatio ?? 0.5))
+    setTcpAutoReconnect(d.tcpAutoReconnect ?? true)
+    setTcpReconnectIntervalMs(String(d.tcpReconnectIntervalMs ?? 3000))
+    setTcpReconnectMaxAttempts(String(d.tcpReconnectMaxAttempts ?? 0))
+    setTcpReconnectBackoff(d.tcpReconnectBackoff ?? true)
+    setTcpHeartbeatEnabled(d.tcpHeartbeatEnabled ?? false)
+    setTcpHeartbeatIntervalMs(String(d.tcpHeartbeatIntervalMs ?? 30_000))
+    setTcpHeartbeatTimeoutMs(String(d.tcpHeartbeatTimeoutMs ?? 90_000))
+    setTcpHeartbeatHex(d.tcpHeartbeatHex ?? '00')
+    setTcpTcpKeepalive(d.tcpTcpKeepalive ?? false)
+    setTcpLink(TCP_LINK_IDLE)
     const sp = normalizeSendPresetsFromPersist(d)
     setSendPresets(sp.presets)
     setLoopPresetId(sp.loopId)
@@ -1181,6 +1630,33 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
             ) : null}
 
             </NcConfigCard>
+
+            {mode === 'tcp_client' ? (
+              <NcTcpLinkCard
+                idPrefix={idPrefix}
+                t={t}
+                sessionRunning={sessionRunning}
+                autoReconnect={tcpAutoReconnect}
+                onAutoReconnect={setTcpAutoReconnect}
+                reconnectIntervalMs={tcpReconnectIntervalMs}
+                onReconnectIntervalMs={setTcpReconnectIntervalMs}
+                reconnectMaxAttempts={tcpReconnectMaxAttempts}
+                onReconnectMaxAttempts={setTcpReconnectMaxAttempts}
+                reconnectBackoff={tcpReconnectBackoff}
+                onReconnectBackoff={setTcpReconnectBackoff}
+                heartbeatEnabled={tcpHeartbeatEnabled}
+                onHeartbeatEnabled={setTcpHeartbeatEnabled}
+                heartbeatIntervalMs={tcpHeartbeatIntervalMs}
+                onHeartbeatIntervalMs={setTcpHeartbeatIntervalMs}
+                heartbeatTimeoutMs={tcpHeartbeatTimeoutMs}
+                onHeartbeatTimeoutMs={setTcpHeartbeatTimeoutMs}
+                heartbeatHex={tcpHeartbeatHex}
+                onHeartbeatHex={setTcpHeartbeatHex}
+                tcpKeepalive={tcpTcpKeepalive}
+                onTcpKeepalive={setTcpTcpKeepalive}
+                link={tcpLink}
+              />
+            ) : null}
 
             {mode === 'udp_client' ? (
               <NcUdpTargetCard
@@ -1380,7 +1856,12 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
             ) : null}
 
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-              <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-[#18181b] shadow-lg">
+              <div ref={centerSplitRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div
+                style={logPaneStyle}
+                className="flex min-h-0 flex-col overflow-hidden"
+              >
+              <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-[#18181b] shadow-lg">
                 <div className="sticky top-0 z-10 flex flex-shrink-0 items-center justify-between border-b border-zinc-800/60 bg-[#18181b]/95 px-3 py-2 backdrop-blur-md">
                   <div className="flex min-w-0 flex-1 items-center gap-2">
                     <span className="shrink-0 text-xs font-semibold text-zinc-100">{t('session.output')}</span>
@@ -1445,8 +1926,23 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   })}
                 </div>
               </div>
+              </div>
 
-            <div className="relative flex min-h-[14rem] flex-1 shrink-0 flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-[#18181b] shadow-lg">
+              <div
+                {...separatorProps}
+                aria-label={t('session.splitResize')}
+                title={t('session.splitResizeHint')}
+              >
+                <div className="mx-3 flex h-full min-w-0 flex-1 items-center justify-center rounded-sm border-y border-transparent transition-colors group-hover:border-zinc-700/50 group-hover:bg-zinc-900/70 group-active:border-[#006FEE]/35 group-active:bg-[#006FEE]/10">
+                  <div className="h-0.5 w-12 shrink-0 rounded-full bg-zinc-700/80 transition-colors group-hover:bg-zinc-500 group-active:bg-[#006FEE]/70" />
+                </div>
+              </div>
+
+              <div
+                style={editorPaneStyle}
+                className="flex min-h-0 flex-col overflow-hidden"
+              >
+            <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-[#18181b] shadow-lg">
               <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/60 bg-[#18181b]/95 px-3 py-2 backdrop-blur-md">
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
                   <span className="text-xs font-semibold text-zinc-100">{t('session.messageEditor')}</span>
@@ -1484,12 +1980,15 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
               </div>
               <div className="flex shrink-0 flex-wrap items-end gap-1.5 border-b border-zinc-800/60 bg-[#18181b]/90 px-3 py-2">
                 <div className="min-w-0 max-w-[min(100%,14rem)] flex-1 sm:max-w-none">
-                  <NcFieldLabel htmlFor={`${idPrefix}-tx-target`}>{t('session.fieldTarget')}</NcFieldLabel>
+                  <NcFieldLabel htmlFor={`${idPrefix}-tx-target`}>
+                    {mode === 'tcp_client' ? t('session.fieldServerLink') : t('session.fieldTarget')}
+                  </NcFieldLabel>
                   <Select
                     fullWidth
                     variant="secondary"
                     aria-label={t('session.sendTarget')}
                     value={sendTarget}
+                    isDisabled={mode === 'tcp_client' && clients.length === 0}
                     onChange={(k) => {
                       if (k != null) setSendTarget(String(k))
                     }}
@@ -1501,14 +2000,16 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                     </Select.Trigger>
                     <Select.Popover placement="bottom start" className={LB_POPOVER}>
                       <ListBox className={LB_LIST}>
-                        <ListBox.Item
-                          id="all"
-                          textValue={`${t('session.allTargets')} (${clients.length})`}
-                          className="text-xs text-zinc-100"
-                        >
-                          {t('session.allTargets')} ({clients.length})
-                          <ListBox.ItemIndicator />
-                        </ListBox.Item>
+                        {showAllSendTargets ? (
+                          <ListBox.Item
+                            id="all"
+                            textValue={`${t('session.allTargets')} (${clients.length})`}
+                            className="text-xs text-zinc-100"
+                          >
+                            {t('session.allTargets')} ({clients.length})
+                            <ListBox.ItemIndicator />
+                          </ListBox.Item>
+                        ) : null}
                         {clients.map((c) => (
                           <ListBox.Item
                             key={c.id}
@@ -1650,7 +2151,9 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 </Text>
               ) : null}
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800/60 bg-[#18181b] px-3 py-1.5 shadow-sm">
+              </div>
+              </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800/60 bg-[#18181b] px-3 py-1.5 shadow-sm">
               <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] font-medium text-zinc-400">
                 <span className="flex items-center gap-1">
                   TX_BYT <span className="text-zinc-200">{stats.tx_bytes}</span>
@@ -1664,13 +2167,27 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 <span className="flex items-center gap-1">
                   RX_PKT <span className="text-zinc-200">{stats.rx_pkts}</span>
                 </span>
-                <span
-                  className={`ml-1 flex items-center gap-1 ${sessionRunning ? 'text-[#17c964]' : 'text-zinc-500'}`}
-                >
-                  <span
-                    className={`h-1.5 w-1.5 rounded-full ${sessionRunning ? 'bg-[#17c964] shadow-[0_0_6px_rgba(23,201,100,0.6)]' : 'bg-zinc-600'}`}
-                  />
-                  {sessionRunning ? 'CONNECTED' : 'DISCONNECTED'}
+                {tabMode === 'tcp_client' && sessionRunning && tcpHeartbeatEnabled ? (
+                  <span className="flex items-center gap-1 text-zinc-500">
+                    HB
+                    <span
+                      className={
+                        tcpLink.heartbeat === 'ok'
+                          ? 'text-[#17c964]'
+                          : tcpLink.heartbeat === 'timeout'
+                            ? 'text-red-400'
+                            : tcpLink.heartbeat === 'waiting'
+                              ? 'text-amber-400'
+                              : 'text-zinc-500'
+                      }
+                    >
+                      {tcpHeartbeatLabel(t, tcpLink.heartbeat)}
+                    </span>
+                  </span>
+                ) : null}
+                <span className={`ml-1 flex items-center gap-1 ${linkStatusClass}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${linkDotClass}`} />
+                  {linkStatusLabel}
                 </span>
               </div>
               <Button
