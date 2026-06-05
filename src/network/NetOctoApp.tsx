@@ -9,6 +9,7 @@ import { NetOctoSession } from './NetOctoSession'
 import { SessionEditorBridgeProvider } from './sessionEditorBridge'
 import { loadWorkspace, saveWorkspace } from './tabsPersist'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { useTheme } from '../useTheme'
 
 interface TabDef {
   id: string
@@ -28,6 +29,7 @@ function workspaceFromState(
 
 export default function NetOctoApp() {
   const { t, locale, setLocale } = useI18n()
+  const { theme, setTheme } = useTheme()
   const settingsModal = useOverlayState()
   const inTauri = useMemo(() => isTauri(), [])
   const initialWorkspace = useMemo(() => loadWorkspace(), [])
@@ -48,7 +50,7 @@ export default function NetOctoApp() {
   const [tabs, setTabs] = useState<TabDef[]>(() => initialWorkspace.tabIds.map((id) => ({ id })))
   const [activeTabId, setActiveTabId] = useState(initialWorkspace.activeTabId)
   const [customNames, setCustomNames] = useState<Record<string, string>>(() => ({ ...initialWorkspace.customNames }))
-  const [tabMeta, setTabMeta] = useState<Record<string, { running: boolean; tabTitle: string }>>({})
+  const [tabMeta, setTabMeta] = useState<Record<string, { running: boolean; tabTitle: string; hasUnread?: boolean }>>({})
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -57,6 +59,47 @@ export default function NetOctoApp() {
     saveWorkspace(workspaceFromState(tabs, activeTabId, customNames))
   }, [tabs, activeTabId, customNames])
 
+  const kbRef = useRef({ tabs, activeTabId, tabMeta, webviewLabel })
+  kbRef.current = { tabs, activeTabId, tabMeta, webviewLabel }
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (mod && e.key === 'n') {
+        e.preventDefault()
+        const id = `tab-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`
+        setTabs((prev) => [...prev, { id }])
+        setActiveTabId(id)
+      } else if (mod && e.key === 'w') {
+        const { tabs: curTabs, activeTabId: curActive, webviewLabel: wl, tabMeta: tm } = kbRef.current
+        if (curTabs.length <= 1) return
+        e.preventDefault()
+        if (tm[curActive]?.running) {
+          void invoke('nc_stop_session', { sessionId: curActive, webviewLabel: wl }).catch(() => {})
+        }
+        const idx = curTabs.findIndex((x) => x.id === curActive)
+        const nextList = curTabs.filter((x) => x.id !== curActive)
+        setTabs(nextList)
+        setTabMeta((m) => {
+          const { [curActive]: _, ...rest } = m
+          return rest
+        })
+        setCustomNames((m) => {
+          if (!(curActive in m)) return m
+          const { [curActive]: _, ...rest } = m
+          return rest
+        })
+        if (renamingTabId === curActive) setRenamingTabId(null)
+        const nextId = nextList[Math.max(0, idx - 1)]?.id ?? nextList[0]?.id
+        if (nextId) setActiveTabId(nextId)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [renamingTabId])
+
   useEffect(() => {
     if (renamingTabId && renameInputRef.current) {
       renameInputRef.current.focus()
@@ -64,11 +107,12 @@ export default function NetOctoApp() {
     }
   }, [renamingTabId])
 
-  const updateMeta = useCallback((id: string, meta: { running: boolean; tabTitle: string }) => {
+  const updateMeta = useCallback((id: string, meta: { running: boolean; tabTitle: string; hasUnread?: boolean }) => {
     setTabMeta((prev) => {
       const cur = prev[id]
-      if (cur?.running === meta.running && cur?.tabTitle === meta.tabTitle) return prev
-      return { ...prev, [id]: meta }
+      const unread = meta.hasUnread ?? cur?.hasUnread ?? false
+      if (cur?.running === meta.running && cur?.tabTitle === meta.tabTitle && cur?.hasUnread === unread) return prev
+      return { ...prev, [id]: { running: meta.running, tabTitle: meta.tabTitle, hasUnread: unread } }
     })
   }, [])
 
@@ -135,11 +179,11 @@ export default function NetOctoApp() {
 
   return (
     <SessionEditorBridgeProvider activeTabId={activeTabId}>
-    <div className="nc-workspace nc-root flex h-dvh min-h-0 flex-col bg-[#0a0a0b] font-sans text-zinc-100 antialiased selection:bg-[#006FEE]/30">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800/60 bg-[#0a0a0b] px-3 py-2">
+    <div className="nc-workspace nc-root flex h-dvh min-h-0 flex-col bg-[var(--nc-bg-primary)] font-sans text-[var(--nc-text-primary)] antialiased selection:bg-[var(--nc-selection)]">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b nc-border bg-[var(--nc-bg-primary)] px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div
-            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-xl border border-zinc-800/60 bg-[#18181b] p-1 shadow-sm custom-scrollbar"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-xl border nc-border bg-[var(--nc-bg-surface)] p-1 shadow-sm custom-scrollbar"
             onContextMenu={(e) => e.preventDefault()}
           >
             {tabs.map((tab) => {
@@ -152,11 +196,7 @@ export default function NetOctoApp() {
                   role="tab"
                   tabIndex={0}
                   aria-selected={isActive}
-                  className={`flex max-w-[14rem] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
-                    isActive
-                      ? 'bg-[#27272a] text-zinc-100 shadow-sm'
-                      : 'text-zinc-400 hover:bg-[#27272a]/50 hover:text-zinc-200'
-                  }`}
+                  className={`nc-tab max-w-[14rem] ${isActive ? 'nc-tab-active' : ''}`}
                   onClick={() => {
                     if (!isRenaming) setActiveTabId(tab.id)
                   }}
@@ -172,7 +212,13 @@ export default function NetOctoApp() {
                   }}
                 >
                   <span
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full shadow-sm ${running ? 'bg-[#17c964] shadow-[#17c964]/40' : 'bg-zinc-600'}`}
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full shadow-sm ${
+                      running
+                        ? 'bg-[var(--nc-status-ok)] shadow-[color-mix(in_srgb,var(--nc-status-ok)_40%,transparent)]'
+                        : tabMeta[tab.id]?.hasUnread
+                          ? 'bg-[var(--nc-status-warn)] shadow-[color-mix(in_srgb,var(--nc-status-warn)_40%,transparent)]'
+                          : 'bg-[var(--nc-text-faint)]'
+                    }`}
                   />
                   {isRenaming ? (
                     <input
@@ -180,7 +226,7 @@ export default function NetOctoApp() {
                       type="text"
                       value={renameDraft}
                       aria-label={t('app.renameTab')}
-                      className="min-w-0 max-w-[9rem] flex-1 rounded border border-zinc-600 bg-[#0a0a0b] px-1 py-0 font-mono text-xs text-zinc-100 outline-none focus:border-[#006FEE]"
+                      className="min-w-0 max-w-[9rem] flex-1 rounded border border-[rgb(var(--nc-border-default)/0.7)] bg-[var(--nc-bg-primary)] px-1 py-0 font-mono text-xs text-[var(--nc-text-primary)] outline-none focus:border-[var(--nc-accent)]"
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setRenameDraft(e.target.value)}
                       onKeyDown={(e) => {
@@ -206,7 +252,7 @@ export default function NetOctoApp() {
                   {tabs.length > 1 ? (
                     <button
                       type="button"
-                      className="-mr-0.5 ml-0.5 rounded p-0.5 text-zinc-500 transition-colors hover:bg-zinc-700/50 hover:text-red-400"
+                      className="-mr-0.5 ml-0.5 rounded p-0.5 text-[var(--nc-text-muted)] transition-colors hover:bg-[var(--nc-bg-input-hover)] hover:text-[var(--nc-status-err)]"
                       aria-label={t('app.closeTab')}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -224,7 +270,7 @@ export default function NetOctoApp() {
               size="sm"
               variant="ghost"
               aria-label={t('app.newTab')}
-              className="ml-0.5 h-auto min-w-0 shrink-0 px-2 py-1.5 text-zinc-400 hover:text-white data-[hover=true]:bg-[#27272a]/50"
+              className="ml-0.5 h-auto min-w-0 shrink-0 px-2 py-1.5 text-[var(--nc-text-label)] hover:text-white data-[hover=true]:bg-[var(--nc-bg-elevated)]/50"
               onPress={addTab}
             >
               <Plus size={14} />
@@ -235,7 +281,7 @@ export default function NetOctoApp() {
           <Text
             type="body-xs"
             truncate
-            className="hidden max-w-[12rem] font-mono text-[10px] text-zinc-500 sm:block"
+            className="hidden max-w-[12rem] font-mono text-[10px] text-[var(--nc-text-muted)] sm:block"
             title={t('app.webviewTitle')}
           >
             {webviewLabel}
@@ -246,7 +292,7 @@ export default function NetOctoApp() {
             size="sm"
             variant="ghost"
             aria-label={t('app.settings')}
-            className="h-auto min-w-0 rounded-xl border border-zinc-800/60 bg-[#18181b] p-1.5 text-zinc-400 shadow-sm hover:text-zinc-100 data-[hover=true]:bg-[#27272a]"
+            className="nc-chrome-btn"
             onPress={() => void openSettings()}
           >
             <Settings size={14} />
@@ -272,7 +318,7 @@ export default function NetOctoApp() {
                 <Modal.Header>
                   <Modal.Heading>{t('settings.title')}</Modal.Heading>
                 </Modal.Header>
-                <Modal.Body className="flex flex-col gap-2">
+                <Modal.Body className="flex flex-col gap-3">
                   <Text type="body-sm" color="muted">
                     {t('settings.language')}
                   </Text>
@@ -295,6 +341,36 @@ export default function NetOctoApp() {
                       <Radio.Content className="text-sm">{t('settings.langEn')}</Radio.Content>
                     </Radio>
                   </RadioGroup>
+                  <div className="mt-1 border-t nc-border pt-3">
+                    <Text type="body-sm" color="muted">
+                      {t('settings.theme')}
+                    </Text>
+                    <RadioGroup
+                      value={theme}
+                      onChange={(v) => setTheme(v as 'dark' | 'light')}
+                      className="mt-1 flex flex-col gap-2"
+                      aria-label={t('settings.theme')}
+                    >
+                      <Radio value="dark" className="items-start gap-2">
+                        <Radio.Control>
+                          <Radio.Indicator />
+                        </Radio.Control>
+                        <Radio.Content className="flex items-center gap-2 text-sm">
+                          <span className="nc-theme-swatch-dark" />
+                          {t('settings.themeDark')}
+                        </Radio.Content>
+                      </Radio>
+                      <Radio value="light" className="items-start gap-2">
+                        <Radio.Control>
+                          <Radio.Indicator />
+                        </Radio.Control>
+                        <Radio.Content className="flex items-center gap-2 text-sm">
+                          <span className="nc-theme-swatch-light" />
+                          {t('settings.themeLight')}
+                        </Radio.Content>
+                      </Radio>
+                    </RadioGroup>
+                  </div>
                 </Modal.Body>
                 <Modal.Footer className="justify-end gap-2">
                   <Button

@@ -91,3 +91,26 @@ export function extractHexPayloadFromEditor(raw: string): string {
   }
   return normalizeHexInput(chunks.join(' '))
 }
+
+/** Encode text as UTF-8 bytes, return hex string (uppercase, space-separated). */
+export function encodeUtf8ToHex(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+}
+
+/** Decode hex bytes as UTF-8 text. Returns the decoded string or the original input on failure. */
+export function decodeUtf8FromHex(hex: string): string {
+  const digits = compactHexUpper(hex)
+  if (digits.length === 0) return ''
+  if (digits.length % 2 !== 0) return hex
+  const bytes = new Uint8Array(digits.length / 2)
+  for (let i = 0; i < digits.length; i += 2) {
+    bytes[i / 2] = parseInt(digits.slice(i, i + 2), 16)
+  }
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+}
+
+/** Extract a clean text payload from the editor for UTF-8 send mode (strip comments). */
+export function extractUtf8PayloadFromEditor(raw: string): string {
+  return stripFullLineSlashComments(raw).trimEnd()
+}

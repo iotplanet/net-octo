@@ -1,5 +1,6 @@
 import { isTauri } from '@tauri-apps/api/core'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { readStoredTheme, THEME_BG } from './theme/document'
 import { SETTINGS_WEBVIEW_LABEL } from './settingsWindowLabel'
 
 export type OpenNativeSettingsResult = 'opened' | 'focused' | 'unsupported'
@@ -22,6 +23,8 @@ export async function openNativeSettingsWindow(windowTitle: string): Promise<Ope
     center: true,
     resizable: true,
     focus: true,
+    visible: false,
+    backgroundColor: THEME_BG[readStoredTheme()],
   })
   void w.once('tauri://error', (e) => {
     console.error('settings webview', e)

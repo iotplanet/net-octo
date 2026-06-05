@@ -1,10 +1,8 @@
 import {
   Button,
   Card,
-  Checkbox,
   Chip,
   Input,
-  Label,
   ListBox,
   Select,
   Text,
@@ -15,10 +13,9 @@ import {
   Antenna,
   ArrowRight,
   Download,
+  FileArchive,
   Filter,
-  GitBranch,
   History,
-  Info,
   Play,
   Plus,
   Radio,
@@ -32,24 +29,61 @@ import { useI18n, type Translate } from '../i18n'
 import {
   clampCenterSplitRatio,
   defaultSettings,
+  effectiveRecvEncoding,
+  effectiveSendEncoding,
   loadSettings,
   type PersistedSettings,
+  type RecvEncoding,
+  recvIsAscii,
+  recvIsUtf8,
+  type SendEncoding,
   type SendPreset,
+  sendIsAscii,
+  sendIsHex,
+  sendIsUtf8,
   type SessionMode,
-  tcpClientLinkInvokeFields,
   type UdpTargetKind,
   saveSettings,
 } from './persist'
+import { TcpLinkConfigCard } from './TcpLinkConfigCard'
+import { NcCheckboxRow, NcConfigCard, NcFieldLabel } from './sharedUi'
+import {
+  isTcpClientLinkUp,
+  linkStatusVisual,
+  parseNcTcpLinkPayload,
+  TCP_LINK_IDLE,
+  tcpClientLinkInvokeFields,
+  tcpHeartbeatLabel,
+  tcpHeartbeatVisual,
+  tcpLinkFromPersist,
+  tcpLinkPhaseLabel,
+  tcpLinkToPersistSlice,
+  type TcpLinkState,
+} from './tcpLink'
 import { useVerticalSplitDrag } from './useVerticalSplit'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
   compactHexUpper,
+  decodeUtf8FromHex,
+  encodeUtf8ToHex,
   extractAsciiPayloadFromEditor,
   extractHexPayloadFromEditor,
+  extractUtf8PayloadFromEditor,
   formatHexEditorBody,
   isCompleteHexPayload,
 } from './hexInput'
+import { expandVariables, getVarCounter, resetVarCounter } from './varSub'
+import { exportPcap } from './pcap'
 import { useSessionEditorBridge } from './sessionEditorBridge'
+import {
+  EDITOR_COMMENT_CLASS,
+  EDITOR_PAYLOAD_CLASS,
+  LB_LIST,
+  LB_POPOVER,
+  NC_INPUT,
+  NC_SELECT_TRIGGER,
+  NC_SELECT_TRIGGER_SM,
+} from './themeClasses'
 
 interface LogLine {
   ts: string
@@ -71,13 +105,15 @@ interface Stats {
 
 const BIND_PRESETS = ['0.0.0.0', '127.0.0.1', '::']
 
-/** HeroUI v3 Select：受控用 value / onChange；Popover 内 ListBox.Item 需含 ItemIndicator */
-const LB_POPOVER = 'min-w-[var(--trigger-width)] border border-zinc-800/80 bg-[#18181b] p-0 shadow-xl'
+function useInterfaces() {
+  const [ifaces, setIfaces] = useState<string[]>([])
+  useEffect(() => {
+    invoke<string[]>('nc_list_interfaces').then(setIfaces).catch(() => {})
+  }, [])
+  return ifaces
+}
 
 /** 报文编辑器：仅行首（可含前导空白）的 // 起为注释；发送剥离仍以 hexInput 为准 */
-const EDITOR_PAYLOAD_CLASS = 'text-[#5EA2EF]'
-const EDITOR_COMMENT_CLASS = 'text-[#4ade80]'
-
 function messageEditorLineHighlight(line: string): ReactNode {
   const leading = /^\s*/.exec(line)?.[0] ?? ''
   const afterLeading = line.slice(leading.length)
@@ -108,15 +144,6 @@ function messageEditorHighlightTree(text: string): ReactNode {
     return node
   })
 }
-const LB_LIST = 'max-h-52 overflow-y-auto p-1 outline-none sm:max-h-60'
-
-const ZINC_TRIGGER =
-  'min-h-8 w-full rounded-xl border border-zinc-700/50 bg-[#27272a] py-1.5 pl-2.5 pr-2 font-mono text-xs text-zinc-100 hover:bg-[#3f3f46] data-[hover=true]:bg-[#3f3f46] sm:min-h-9'
-const ZINC_TRIGGER_SM =
-  'min-h-7 w-full rounded-xl border border-zinc-700/50 bg-[#27272a] py-1.5 pl-2 pr-2 font-mono text-[11px] text-zinc-100 hover:bg-[#3f3f46] data-[hover=true]:bg-[#3f3f46] sm:min-h-8 sm:text-xs'
-const ZINC_INPUT =
-  'min-h-8 rounded-xl border border-zinc-700/50 bg-[#27272a] font-mono text-xs text-zinc-100 hover:bg-[#3f3f46] data-[hover=true]:bg-[#3f3f46] sm:min-h-9'
-
 function newSendPresetId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `p-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
@@ -161,27 +188,23 @@ function logBadgeForKind(kind: string): { label: string; className: string } {
     case 'info':
       return { label: 'INF', className: 'text-sky-300 bg-sky-500/10 border border-sky-500/25' }
     default:
-      return { label: 'LOG', className: 'text-zinc-400 bg-zinc-800/80 border border-zinc-700/50' }
+      return { label: 'LOG', className: 'text-[var(--nc-text-label)] bg-[var(--nc-bg-elevated)] border border-[rgb(var(--nc-border-default)/0.5)]' }
   }
 }
 
-type TcpLinkPhase = 'idle' | 'connected' | 'reconnecting' | 'disconnected' | 'failed' | 'stopped'
-type TcpHeartbeatState = 'off' | 'ok' | 'waiting' | 'timeout'
-
-interface TcpLinkState {
-  phase: TcpLinkPhase
-  attempt: number
-  maxAttempts: number
-  nextRetryMs: number
-  heartbeat: TcpHeartbeatState
-}
-
-const TCP_LINK_IDLE: TcpLinkState = {
-  phase: 'idle',
-  attempt: 0,
-  maxAttempts: 0,
-  nextRetryMs: 0,
-  heartbeat: 'off',
+function highlightMatches(text: string, search: string): ReactNode {
+  if (!search) return text
+  const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'))
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === search.toLowerCase()
+          ? <mark key={i} className="nc-highlight-match rounded-sm px-0.5">{part}</mark>
+          : part
+      )}
+    </>
+  )
 }
 
 function formatSessionTabTitle(
@@ -203,119 +226,35 @@ function formatSessionTabTitle(
   return running ? `${prefix} :${localPort}` : `${prefix} (${idleLabel})`
 }
 
-function tcpLinkPhaseLabel(t: Translate, phase: TcpLinkPhase): string {
-  switch (phase) {
-    case 'connected':
-      return t('session.tcpLink.connected')
-    case 'reconnecting':
-      return t('session.tcpLink.reconnecting')
-    case 'disconnected':
-      return t('session.tcpLink.disconnected')
-    case 'failed':
-      return t('session.tcpLink.failed')
-    case 'stopped':
-      return t('session.tcpLink.stopped')
-    default:
-      return t('session.tcpLink.idle')
-  }
-}
-
-function tcpHeartbeatLabel(t: Translate, hb: TcpHeartbeatState): string {
-  switch (hb) {
-    case 'ok':
-      return t('session.tcpLink.hbOk')
-    case 'waiting':
-      return t('session.tcpLink.hbWaiting')
-    case 'timeout':
-      return t('session.tcpLink.hbTimeout')
-    default:
-      return t('session.tcpLink.hbOff')
-  }
-}
-
-function NcConfigCard({
-  title,
-  children,
-  footer,
-}: {
-  title: string
-  children: React.ReactNode
-  footer?: React.ReactNode
-}) {
+function encodingButton(label: string, active: boolean, onClick: () => void, compact?: boolean) {
   return (
-    <div className="shrink-0 space-y-3 rounded-xl border border-zinc-800/60 bg-[#18181b] p-3 shadow-sm">
-      <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">{title}</div>
-      <div className="space-y-2">{children}</div>
-      {footer ? <div className="border-t border-zinc-800/60 pt-2.5">{footer}</div> : null}
-    </div>
+    <button
+      type="button"
+      className={`${compact ? 'rounded px-2 py-0.5 text-[10px]' : 'flex-1 rounded-md py-1 text-xs'} font-medium transition-all ${
+        active ? 'nc-encoding-btn-active' : 'nc-encoding-btn'
+      }`}
+      onClick={onClick}
+    >
+      {label}
+    </button>
   )
 }
 
 function NcEncodingToggle({
-  ascii,
-  onAscii,
-  onHex,
+  encoding,
+  onChange,
   compact,
 }: {
-  ascii: boolean
-  onAscii: () => void
-  onHex: () => void
-  /** 对齐 redesign 报文编辑顶栏小切换 */
+  encoding: SendEncoding | RecvEncoding
+  onChange: (e: SendEncoding | RecvEncoding) => void
   compact?: boolean
 }) {
-  if (compact) {
-    return (
-      <div className="flex rounded-lg border border-zinc-700/30 bg-[#27272a] p-0.5">
-        <button
-          type="button"
-          className={`rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
-            ascii ? 'bg-[#3f3f46] text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
-          }`}
-          onClick={onAscii}
-        >
-          ASCII
-        </button>
-        <button
-          type="button"
-          className={`rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
-            ascii ? 'text-zinc-400 hover:text-zinc-200' : 'bg-[#3f3f46] text-zinc-100 shadow-sm'
-          }`}
-          onClick={onHex}
-        >
-          HEX
-        </button>
-      </div>
-    )
-  }
   return (
-    <div className="flex w-full rounded-lg border border-zinc-700/30 bg-[#27272a] p-0.5 shadow-inner">
-      <button
-        type="button"
-        className={`flex-1 rounded-md py-1 text-xs font-medium transition-all ${
-          ascii ? 'bg-[#3f3f46] text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
-        }`}
-        onClick={onAscii}
-      >
-        ASCII
-      </button>
-      <button
-        type="button"
-        className={`flex-1 rounded-md py-1 text-xs font-medium transition-all ${
-          ascii ? 'text-zinc-400 hover:text-zinc-200' : 'bg-[#3f3f46] text-white shadow-sm'
-        }`}
-        onClick={onHex}
-      >
-        HEX
-      </button>
+    <div className={`nc-encoding-toggle flex ${compact ? '' : 'w-full'} ${compact ? '' : 'shadow-inner'}`}>
+      {encodingButton('ASCII', encoding === 'ascii', () => onChange('ascii'), compact)}
+      {encodingButton('HEX', encoding === 'hex', () => onChange('hex'), compact)}
+      {encodingButton('UTF-8', encoding === 'utf8', () => onChange('utf8'), compact)}
     </div>
-  )
-}
-
-function NcFieldLabel({ htmlFor, children }: { htmlFor: string; children: React.ReactNode }) {
-  return (
-    <Label htmlFor={htmlFor} className="mb-1 block text-[10px] font-medium text-zinc-400 sm:text-[10px]">
-      {children}
-    </Label>
   )
 }
 
@@ -358,20 +297,20 @@ function NcUdpTargetCard({
   const nonEmptyGroups = groups.filter((g) => g.trim().length > 0)
 
   return (
-    <Card className="relative overflow-visible rounded-xl border border-zinc-800/60 bg-[#18181b] shadow-sm">
+    <Card className="relative overflow-visible rounded-xl border nc-border bg-[var(--nc-bg-surface)] text-[var(--nc-text-primary)] shadow-sm">
       <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-1/2">
         <Chip
           size="sm"
           variant="soft"
-          className="pointer-events-auto border border-zinc-700/60 bg-[#27272a] shadow-sm"
+          className="pointer-events-auto border border-[rgb(var(--nc-border-default)/0.6)] bg-[var(--nc-bg-elevated)] shadow-sm"
         >
-          <Chip.Label className="text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
+          <Chip.Label className="text-[10px] font-semibold uppercase tracking-wide text-[var(--nc-text-label)]">
             {t('session.udpTargetTitle')}
           </Chip.Label>
         </Chip>
       </div>
       <Card.Content className="flex flex-col gap-3 px-2.5 pb-3 pt-4 sm:px-3 sm:pb-3.5">
-        <div className="flex justify-center rounded-full border border-zinc-700/40 bg-[#27272a] p-0.5">
+        <div className="flex justify-center rounded-full border border-[rgb(var(--nc-border-default)/0.4)] bg-[var(--nc-bg-elevated)] p-0.5">
           <Button
             isIconOnly
             size="sm"
@@ -406,14 +345,14 @@ function NcUdpTargetCard({
             <Antenna size={16} strokeWidth={2.25} />
           </Button>
         </div>
-        <Text type="body-xs" className="text-center leading-snug text-zinc-500">
+        <Text type="body-xs" className="text-center leading-snug text-[var(--nc-text-muted)]">
           {hint}
         </Text>
         {kind === 'multicast' ? (
           <>
-            <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-500">
+            <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--nc-text-muted)]">
               <span>{t('session.udpMulticastGroups')}</span>
-              <span className="font-mono tabular-nums text-zinc-400">{nonEmptyGroups.length}</span>
+              <span className="font-mono tabular-nums text-[var(--nc-text-label)]">{nonEmptyGroups.length}</span>
             </div>
             <div className="flex flex-col gap-2">
               {groups.map((g, idx) => (
@@ -428,7 +367,7 @@ function NcUdpTargetCard({
                     }}
                     variant="secondary"
                     placeholder={t('session.udpMulticastGroupPlaceholder')}
-                    className={`min-h-8 flex-1 ${ZINC_INPUT}`}
+                    className={`min-h-8 flex-1 ${NC_INPUT}`}
                     aria-label={t('session.udpMulticastGroupPlaceholder')}
                   />
                   <Button
@@ -437,7 +376,7 @@ function NcUdpTargetCard({
                     variant="ghost"
                     isDisabled={sessionRunning}
                     aria-label={t('session.udpMulticastRemove')}
-                    className="shrink-0 text-zinc-500 hover:text-red-400"
+                    className="shrink-0 text-[var(--nc-text-muted)] hover:text-red-400"
                     onPress={() => onGroupsChange(groups.filter((_, i) => i !== idx))}
                   >
                     <Trash2 size={14} />
@@ -450,7 +389,7 @@ function NcUdpTargetCard({
               variant="outline"
               size="sm"
               isDisabled={sessionRunning}
-              className="border-dashed border-zinc-600 text-zinc-300 hover:bg-[#27272a]"
+              className="border-dashed border-[rgb(var(--nc-border-default)/0.65)] text-[var(--nc-text-body)] hover:bg-[var(--nc-bg-elevated)]"
               onPress={() => onGroupsChange([...groups, ''])}
             >
               <Plus size={14} className="mr-1 shrink-0" />
@@ -468,7 +407,7 @@ function NcUdpTargetCard({
               disabled={sessionRunning}
               onChange={(e) => onWireChange(e.target.value)}
               variant="secondary"
-              className={ZINC_INPUT}
+              className={NC_INPUT}
             />
           </>
         )}
@@ -477,235 +416,17 @@ function NcUdpTargetCard({
   )
 }
 
-function NcTcpLinkCard({
-  idPrefix,
-  t,
-  sessionRunning,
-  autoReconnect,
-  onAutoReconnect,
-  reconnectIntervalMs,
-  onReconnectIntervalMs,
-  reconnectMaxAttempts,
-  onReconnectMaxAttempts,
-  reconnectBackoff,
-  onReconnectBackoff,
-  heartbeatEnabled,
-  onHeartbeatEnabled,
-  heartbeatIntervalMs,
-  onHeartbeatIntervalMs,
-  heartbeatTimeoutMs,
-  onHeartbeatTimeoutMs,
-  heartbeatHex,
-  onHeartbeatHex,
-  tcpKeepalive,
-  onTcpKeepalive,
-  link,
-}: {
-  idPrefix: string
-  t: Translate
-  sessionRunning: boolean
-  autoReconnect: boolean
-  onAutoReconnect: (v: boolean) => void
-  reconnectIntervalMs: string
-  onReconnectIntervalMs: (v: string) => void
-  reconnectMaxAttempts: string
-  onReconnectMaxAttempts: (v: string) => void
-  reconnectBackoff: boolean
-  onReconnectBackoff: (v: boolean) => void
-  heartbeatEnabled: boolean
-  onHeartbeatEnabled: (v: boolean) => void
-  heartbeatIntervalMs: string
-  onHeartbeatIntervalMs: (v: string) => void
-  heartbeatTimeoutMs: string
-  onHeartbeatTimeoutMs: (v: string) => void
-  heartbeatHex: string
-  onHeartbeatHex: (v: string) => void
-  tcpKeepalive: boolean
-  onTcpKeepalive: (v: boolean) => void
-  link: TcpLinkState
-}) {
-  const phaseText = tcpLinkPhaseLabel(t, link.phase)
-  const hbText = tcpHeartbeatLabel(t, link.heartbeat)
-  const attemptHint =
-    link.phase === 'reconnecting' && link.attempt > 0
-      ? link.maxAttempts === 0
-        ? t('session.tcpLink.attemptUnlimited').replace('{n}', String(link.attempt))
-        : t('session.tcpLink.attemptOf')
-            .replace('{n}', String(link.attempt))
-            .replace('{max}', String(link.maxAttempts))
-      : null
-  const retryHint =
-    link.phase === 'reconnecting' && link.nextRetryMs > 0
-      ? t('session.tcpLink.retryIn').replace('{ms}', String(link.nextRetryMs))
-      : null
-
-  return (
-    <NcConfigCard title={t('session.tcpLink.title')}>
-      <div className="rounded-lg border border-zinc-800/80 bg-[#141416] px-2.5 py-2 font-mono text-[10px] leading-relaxed text-zinc-400">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-          <span className="text-zinc-500">{t('session.tcpLink.status')}</span>
-          <span
-            className={
-              link.phase === 'connected'
-                ? 'text-[#17c964]'
-                : link.phase === 'reconnecting'
-                  ? 'text-amber-400'
-                  : link.phase === 'failed'
-                    ? 'text-red-400'
-                    : 'text-zinc-300'
-            }
-          >
-            {phaseText}
-          </span>
-        </div>
-        {attemptHint ? <div className="mt-0.5 text-zinc-500">{attemptHint}</div> : null}
-        {retryHint ? <div className="mt-0.5 text-zinc-500">{retryHint}</div> : null}
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-          <span className="text-zinc-500">{t('session.tcpLink.heartbeat')}</span>
-          <span
-            className={
-              link.heartbeat === 'ok'
-                ? 'text-[#17c964]'
-                : link.heartbeat === 'timeout'
-                  ? 'text-red-400'
-                  : link.heartbeat === 'waiting'
-                    ? 'text-amber-400'
-                    : 'text-zinc-500'
-            }
-          >
-            {hbText}
-          </span>
-        </div>
-      </div>
-      <NcCheckboxRow
-        checked={autoReconnect}
-        onChange={onAutoReconnect}
-        label={t('session.tcpLink.autoReconnect')}
-        disabled={sessionRunning}
-      />
-      {autoReconnect ? (
-        <>
-          <NcFieldLabel htmlFor={`${idPrefix}-tcp-reint`}>{t('session.tcpLink.reconnectInterval')}</NcFieldLabel>
-          <Input
-            id={`${idPrefix}-tcp-reint`}
-            value={reconnectIntervalMs}
-            disabled={sessionRunning}
-            onChange={(e) => onReconnectIntervalMs(e.target.value)}
-            variant="secondary"
-            className={ZINC_INPUT}
-            inputMode="numeric"
-          />
-          <NcFieldLabel htmlFor={`${idPrefix}-tcp-remax`}>{t('session.tcpLink.reconnectMax')}</NcFieldLabel>
-          <Input
-            id={`${idPrefix}-tcp-remax`}
-            value={reconnectMaxAttempts}
-            disabled={sessionRunning}
-            onChange={(e) => onReconnectMaxAttempts(e.target.value)}
-            variant="secondary"
-            className={ZINC_INPUT}
-            inputMode="numeric"
-            placeholder={t('session.tcpLink.reconnectMaxPlaceholder')}
-          />
-          <NcCheckboxRow
-            checked={reconnectBackoff}
-            onChange={onReconnectBackoff}
-            label={t('session.tcpLink.reconnectBackoff')}
-            disabled={sessionRunning}
-          />
-        </>
-      ) : null}
-      <NcCheckboxRow
-        checked={heartbeatEnabled}
-        onChange={onHeartbeatEnabled}
-        label={t('session.tcpLink.heartbeatEnable')}
-        disabled={sessionRunning}
-      />
-      {heartbeatEnabled ? (
-        <>
-          <NcFieldLabel htmlFor={`${idPrefix}-tcp-hbint`}>{t('session.tcpLink.heartbeatInterval')}</NcFieldLabel>
-          <Input
-            id={`${idPrefix}-tcp-hbint`}
-            value={heartbeatIntervalMs}
-            disabled={sessionRunning}
-            onChange={(e) => onHeartbeatIntervalMs(e.target.value)}
-            variant="secondary"
-            className={ZINC_INPUT}
-            inputMode="numeric"
-          />
-          <NcFieldLabel htmlFor={`${idPrefix}-tcp-hbto`}>{t('session.tcpLink.heartbeatTimeout')}</NcFieldLabel>
-          <Input
-            id={`${idPrefix}-tcp-hbto`}
-            value={heartbeatTimeoutMs}
-            disabled={sessionRunning}
-            onChange={(e) => onHeartbeatTimeoutMs(e.target.value)}
-            variant="secondary"
-            className={ZINC_INPUT}
-            inputMode="numeric"
-          />
-          <NcFieldLabel htmlFor={`${idPrefix}-tcp-hbhex`}>{t('session.tcpLink.heartbeatHex')}</NcFieldLabel>
-          <Input
-            id={`${idPrefix}-tcp-hbhex`}
-            value={heartbeatHex}
-            disabled={sessionRunning}
-            onChange={(e) => onHeartbeatHex(e.target.value)}
-            variant="secondary"
-            className={`font-mono ${ZINC_INPUT}`}
-            placeholder="00"
-          />
-        </>
-      ) : null}
-      <NcCheckboxRow
-        checked={tcpKeepalive}
-        onChange={onTcpKeepalive}
-        label={t('session.tcpLink.tcpKeepalive')}
-        disabled={sessionRunning}
-      />
-    </NcConfigCard>
-  )
-}
-
-function NcCheckboxRow({
-  checked,
-  onChange,
-  label,
-  disabled,
-}: {
-  checked: boolean
-  onChange: (v: boolean) => void
-  label: string
-  disabled?: boolean
-}) {
-  return (
-    <Checkbox isSelected={checked} isDisabled={disabled} onChange={onChange} className="mt-0 p-0">
-      {({ isSelected }) => (
-        <div className="flex items-start gap-2">
-          <Checkbox.Control
-            className={
-              isSelected
-                ? 'mt-0.5 box-border size-4 shrink-0 rounded border border-[#006FEE] bg-[#006FEE] text-white shadow-none'
-                : 'mt-0.5 box-border size-4 shrink-0 rounded border border-zinc-400 bg-zinc-950 text-zinc-500 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]'
-            }
-          >
-            <Checkbox.Indicator />
-          </Checkbox.Control>
-          <Checkbox.Content className="text-xs leading-snug text-zinc-300">{label}</Checkbox.Content>
-        </div>
-      )}
-    </Checkbox>
-  )
-}
-
 export interface NetOctoSessionProps {
   sessionId: string
   webviewLabel: string
   active: boolean
-  onTabMeta?: (id: string, meta: { running: boolean; tabTitle: string }) => void
+  onTabMeta?: (id: string, meta: { running: boolean; tabTitle: string; hasUnread?: boolean }) => void
 }
 
 interface SendHistoryItem {
   id: string
   ts: string
-  mode: 'HEX' | 'ASCII'
+  mode: 'HEX' | 'ASCII' | 'UTF-8'
   preview: string
   payload: string
 }
@@ -715,6 +436,12 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   const { register, unregister } = useSessionEditorBridge()
   const idPrefix = useMemo(() => sessionId.replace(/[^a-zA-Z0-9_-]/g, '_'), [sessionId])
   const persisted = useRef(loadSettings(sessionId))
+  const interfaces = useInterfaces()
+  const bindOptions = useMemo(() => {
+    const seen = new Set(BIND_PRESETS)
+    const extras = interfaces.filter((ip) => !seen.has(ip))
+    return [...BIND_PRESETS, ...extras]
+  }, [interfaces])
   const [mode, setMode] = useState<SessionMode>(persisted.current.mode)
   const [bind, setBind] = useState(persisted.current.bind)
   const [port, setPort] = useState(persisted.current.port)
@@ -724,7 +451,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   const [udpMulticastGroups, setUdpMulticastGroups] = useState<string[]>(() =>
     persisted.current.udpMulticastGroups?.length ? [...persisted.current.udpMulticastGroups] : [],
   )
-  const [recvAscii, setRecvAscii] = useState(persisted.current.recvAscii)
+  const [, bumpCounter] = useState(0)
+  const [recvEncoding, setRecvEncoding] = useState<RecvEncoding>(() => effectiveRecvEncoding(persisted.current))
   const [showAsLog, setShowAsLog] = useState(persisted.current.showAsLog)
   const [wrapRecv, setWrapRecv] = useState(persisted.current.wrapRecv)
   const [hideRecv, setHideRecv] = useState(persisted.current.hideRecv)
@@ -738,39 +466,18 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     setCenterSplitRatio,
   )
 
-  const [sendAscii, setSendAscii] = useState(persisted.current.sendAscii)
+  const [sendEncoding, setSendEncoding] = useState<SendEncoding>(() => effectiveSendEncoding(persisted.current))
   const [parseEscapes, setParseEscapes] = useState(persisted.current.parseEscapes)
   const [loopSend, setLoopSend] = useState(persisted.current.loopSend)
   const [loopMs, setLoopMs] = useState(persisted.current.loopMs)
 
-  const [tcpAutoReconnect, setTcpAutoReconnect] = useState(
-    persisted.current.tcpAutoReconnect ?? defaultSettings.tcpAutoReconnect ?? true,
-  )
-  const [tcpReconnectIntervalMs, setTcpReconnectIntervalMs] = useState(
-    String(persisted.current.tcpReconnectIntervalMs ?? defaultSettings.tcpReconnectIntervalMs ?? 3000),
-  )
-  const [tcpReconnectMaxAttempts, setTcpReconnectMaxAttempts] = useState(
-    String(persisted.current.tcpReconnectMaxAttempts ?? defaultSettings.tcpReconnectMaxAttempts ?? 0),
-  )
-  const [tcpReconnectBackoff, setTcpReconnectBackoff] = useState(
-    persisted.current.tcpReconnectBackoff ?? defaultSettings.tcpReconnectBackoff ?? true,
-  )
-  const [tcpHeartbeatEnabled, setTcpHeartbeatEnabled] = useState(
-    persisted.current.tcpHeartbeatEnabled ?? defaultSettings.tcpHeartbeatEnabled ?? false,
-  )
-  const [tcpHeartbeatIntervalMs, setTcpHeartbeatIntervalMs] = useState(
-    String(persisted.current.tcpHeartbeatIntervalMs ?? defaultSettings.tcpHeartbeatIntervalMs ?? 30_000),
-  )
-  const [tcpHeartbeatTimeoutMs, setTcpHeartbeatTimeoutMs] = useState(
-    String(persisted.current.tcpHeartbeatTimeoutMs ?? defaultSettings.tcpHeartbeatTimeoutMs ?? 90_000),
-  )
-  const [tcpHeartbeatHex, setTcpHeartbeatHex] = useState(
-    persisted.current.tcpHeartbeatHex ?? defaultSettings.tcpHeartbeatHex ?? '00',
-  )
-  const [tcpTcpKeepalive, setTcpTcpKeepalive] = useState(
-    persisted.current.tcpTcpKeepalive ?? defaultSettings.tcpTcpKeepalive ?? false,
-  )
+  const [tcpUseTls, setTcpUseTls] = useState(persisted.current.tcpUseTls ?? false)
+  const [tcpLinkUi, setTcpLinkUi] = useState(() => tcpLinkFromPersist(persisted.current))
   const [tcpLink, setTcpLink] = useState<TcpLinkState>(TCP_LINK_IDLE)
+  const patchTcpLinkUi = useCallback(
+    (patch: Partial<typeof tcpLinkUi>) => setTcpLinkUi((s) => ({ ...s, ...patch })),
+    [],
+  )
 
   const [lines, setLines] = useState<LogLine[]>([])
   const [clients, setClients] = useState<ClientInfo[]>([])
@@ -790,6 +497,10 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
 
   const [sendHistory, setSendHistory] = useState<SendHistoryItem[]>([])
   const [showSendHistory, setShowSendHistory] = useState(false)
+  const [logSearch, setLogSearch] = useState('')
+  const [logSearchVisible, setLogSearchVisible] = useState(false)
+  const logSearchInputRef = useRef<HTMLInputElement>(null)
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; line: LogLine } | null>(null)
 
   const logRef = useRef<HTMLDivElement>(null)
   const loopRef = useRef<number | null>(null)
@@ -803,10 +514,16 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     sendTarget,
     sendPresets,
     loopPresetId,
-    sendAscii,
+    sendEncoding,
     parseEscapes,
   })
-  sendRef.current = { sendTarget, sendPresets, loopPresetId, sendAscii, parseEscapes }
+  sendRef.current = { sendTarget, sendPresets, loopPresetId, sendEncoding, parseEscapes }
+
+  const recvRef = useRef(recvEncoding)
+  recvRef.current = recvEncoding
+  const hasUnread = useRef(false)
+  const activeRef = useRef(active)
+  activeRef.current = active
 
   const loopPresetBody = useMemo(
     () => sendPresets.find((p) => p.id === loopPresetId)?.body ?? '',
@@ -821,6 +538,12 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
 
   const editorHighlightTree = useMemo(() => messageEditorHighlightTree(loopPresetBody), [loopPresetBody])
 
+  const filteredLines = useMemo(() => {
+    if (!logSearch) return null
+    const q = logSearch.toLowerCase()
+    return lines.filter((l) => l.line.toLowerCase().includes(q))
+  }, [lines, logSearch])
+
   const appendToEditor = useCallback(
     (fragment: string) => {
       setSendPresets((ps) =>
@@ -833,12 +556,12 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
           const merged = needsSep ? `${prev} ${trimmed}` : `${prev}${trimmed}`
           return {
             ...p,
-            body: sendAscii ? merged : formatHexEditorBody(merged),
+            body: sendIsAscii(sendEncoding) ? merged : formatHexEditorBody(merged),
           }
         }),
       )
     },
-    [loopPresetId, sendAscii],
+    [loopPresetId, sendEncoding],
   )
 
   useEffect(() => {
@@ -848,9 +571,13 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   }, [active, sessionId, register, unregister, appendToEditor])
 
   const appendLine = useCallback((l: LogLine) => {
+    if (!activeRef.current) hasUnread.current = true
     setLines((prev) => {
       if (!showAsLog && l.kind === 'recv') return prev
-      const next = [...prev, l]
+      const line = (recvIsUtf8(recvRef.current) && l.kind === 'recv')
+        ? decodeUtf8FromHex(l.line)
+        : l.line
+      const next = [...prev, { ...l, line }]
       return next.length > 5000 ? next.slice(-4000) : next
     })
   }, [showAsLog])
@@ -864,8 +591,10 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       remotePort,
       udpTargetKind,
       udpMulticastGroups,
-      recvAscii,
-      sendAscii,
+      recvEncoding,
+      sendEncoding,
+      recvAscii: recvIsAscii(recvEncoding),
+      sendAscii: sendIsAscii(sendEncoding),
       parseEscapes,
       loopSend,
       loopMs,
@@ -876,15 +605,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       sendPresets,
       loopPresetId,
       centerSplitRatio,
-      tcpAutoReconnect,
-      tcpReconnectIntervalMs: Number.parseInt(tcpReconnectIntervalMs, 10) || defaultSettings.tcpReconnectIntervalMs,
-      tcpReconnectMaxAttempts: Number.parseInt(tcpReconnectMaxAttempts, 10) || 0,
-      tcpReconnectBackoff,
-      tcpHeartbeatEnabled,
-      tcpHeartbeatIntervalMs: Number.parseInt(tcpHeartbeatIntervalMs, 10) || defaultSettings.tcpHeartbeatIntervalMs,
-      tcpHeartbeatTimeoutMs: Number.parseInt(tcpHeartbeatTimeoutMs, 10) || defaultSettings.tcpHeartbeatTimeoutMs,
-      tcpHeartbeatHex,
-      tcpTcpKeepalive,
+      tcpUseTls,
+      ...tcpLinkToPersistSlice(tcpLinkUi),
     }
     if (saveTimer.current) globalThis.clearTimeout(saveTimer.current)
     saveTimer.current = globalThis.setTimeout(() => saveSettings(sessionId, s), 400)
@@ -900,8 +622,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     remotePort,
     udpTargetKind,
     udpMulticastGroups,
-    recvAscii,
-    sendAscii,
+    recvEncoding,
+    sendEncoding,
     parseEscapes,
     loopSend,
     loopMs,
@@ -912,15 +634,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     sendPresets,
     loopPresetId,
     centerSplitRatio,
-    tcpAutoReconnect,
-    tcpReconnectIntervalMs,
-    tcpReconnectMaxAttempts,
-    tcpReconnectBackoff,
-    tcpHeartbeatEnabled,
-    tcpHeartbeatIntervalMs,
-    tcpHeartbeatTimeoutMs,
-    tcpHeartbeatHex,
-    tcpTcpKeepalive,
+    tcpUseTls,
+    tcpLinkUi,
   ])
 
   useEffect(() => {
@@ -930,14 +645,14 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   }, [sendPresets, loopPresetId])
 
   useEffect(() => {
-    if (!sendAscii) {
+    if (sendIsHex(sendEncoding)) {
       setSendPresets((ps) =>
         ps.map((p) =>
           p.id === loopPresetId ? { ...p, body: formatHexEditorBody(p.body) } : p,
         ),
       )
     }
-  }, [sendAscii, loopPresetId])
+  }, [sendEncoding, loopPresetId])
 
   useEffect(() => {
     const dead = { v: false }
@@ -1020,15 +735,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
         heartbeat: string
       }>('nc-tcp-link', (e) => {
         if (e.payload.sessionId !== sessionId) return
-        const phase = e.payload.phase as TcpLinkPhase
-        const heartbeat = e.payload.heartbeat as TcpHeartbeatState
-        setTcpLink({
-          phase,
-          attempt: e.payload.attempt,
-          maxAttempts: e.payload.maxAttempts,
-          nextRetryMs: e.payload.nextRetryMs,
-          heartbeat,
-        })
+        setTcpLink(parseNcTcpLinkPayload(e.payload))
       })
       if (dead.v) {
         u5()
@@ -1067,57 +774,39 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   }, [mode, clients, sendTarget])
 
   const tabMode = sessionRunning && activeMode !== 'idle' ? activeMode : mode
-  const tcpReconnecting = tabMode === 'tcp_client' && tcpLink.phase === 'reconnecting'
+  const tcpClientActive = tabMode === 'tcp_client' && sessionRunning
+  const tcpReconnecting = tcpClientActive && tcpLink.phase === 'reconnecting'
   const sessionConnected =
     sessionRunning &&
-    (tabMode !== 'tcp_client' ||
-      tcpLink.phase === 'connected' ||
-      (clients.length > 0 && tcpLink.phase !== 'failed' && tcpLink.phase !== 'stopped'))
+    (tabMode !== 'tcp_client' || isTcpClientLinkUp(sessionRunning, tcpLink.phase, clients.length))
   const tabTitle = formatSessionTabTitle(
     tabMode,
     sessionConnected,
     port,
-    tabMode === 'tcp_client' && sessionRunning && clients.length === 0 && tcpLink.phase !== 'reconnecting'
+    tcpClientActive && clients.length === 0 && !tcpReconnecting
       ? t('session.tabDisconnected')
       : t('session.tabIdle'),
     tcpReconnecting ? t('session.tabReconnecting') : undefined,
   )
-  const linkStatusLabel =
-    tabMode === 'tcp_client' && sessionRunning
-      ? tcpLinkPhaseLabel(t, tcpLink.phase)
-      : sessionConnected
-        ? 'CONNECTED'
-        : 'DISCONNECTED'
-  const linkStatusClass =
-    tabMode === 'tcp_client' && sessionRunning
-      ? tcpLink.phase === 'connected'
-        ? 'text-[#17c964]'
-        : tcpLink.phase === 'reconnecting'
-          ? 'text-amber-400'
-          : tcpLink.phase === 'failed'
-            ? 'text-red-400'
-            : 'text-zinc-500'
-      : sessionConnected
-        ? 'text-[#17c964]'
-        : 'text-zinc-500'
-  const linkDotClass =
-    tabMode === 'tcp_client' && sessionRunning
-      ? tcpLink.phase === 'connected'
-        ? 'bg-[#17c964] shadow-[0_0_6px_rgba(23,201,100,0.6)]'
-        : tcpLink.phase === 'reconnecting'
-          ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.5)]'
-          : tcpLink.phase === 'failed'
-            ? 'bg-red-500'
-            : 'bg-zinc-600'
-      : sessionConnected
-        ? 'bg-[#17c964] shadow-[0_0_6px_rgba(23,201,100,0.6)]'
-        : 'bg-zinc-600'
-  const tabRunning =
-    sessionRunning &&
-    (tabMode !== 'tcp_client' || sessionConnected || tcpReconnecting)
+  const linkVisual = linkStatusVisual({
+    tcpClientActive,
+    phase: tcpLink.phase,
+    connected: sessionConnected,
+  })
+  const linkStatusLabel = tcpClientActive
+    ? tcpLinkPhaseLabel(t, tcpLink.phase)
+    : sessionConnected
+      ? 'CONNECTED'
+      : 'DISCONNECTED'
+  const hbVisual = tcpHeartbeatVisual(tcpLink.heartbeat)
+  const tabRunning = sessionRunning && (tabMode !== 'tcp_client' || sessionConnected || tcpReconnecting)
   useEffect(() => {
-    onTabMeta?.(sessionId, { running: tabRunning, tabTitle })
+    onTabMeta?.(sessionId, { running: tabRunning, tabTitle, hasUnread: hasUnread.current })
   }, [sessionId, onTabMeta, tabRunning, tabTitle])
+
+  useEffect(() => {
+    if (active) hasUnread.current = false
+  }, [active])
 
   const canSendLoop = sessionRunning && (mode === 'udp_client' || clients.length > 0)
 
@@ -1137,21 +826,31 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
       const r = sendRef.current
       const raw =
         r.sendPresets.find((p) => p.id === r.loopPresetId)?.body ?? r.sendPresets[0]?.body ?? ''
-      const data = r.sendAscii ? extractAsciiPayloadFromEditor(raw) : extractHexPayloadFromEditor(raw)
-      if (r.sendAscii) {
+      const expanded = expandVariables(raw)
+      let data: string
+      let sendHex: boolean
+      if (sendIsUtf8(r.sendEncoding)) {
+        data = encodeUtf8ToHex(extractUtf8PayloadFromEditor(expanded))
         if (!data) return
+        sendHex = true
+      } else if (sendIsAscii(r.sendEncoding)) {
+        data = extractAsciiPayloadFromEditor(expanded)
+        if (!data) return
+        sendHex = false
       } else {
+        data = extractHexPayloadFromEditor(expanded)
         const hex = compactHexUpper(data)
         if (hex.length === 0 || hex.length % 2 !== 0) return
+        sendHex = true
       }
       void invoke('nc_send', {
         sessionId,
         webviewLabel,
         target: mode === 'tcp_client' && clients.length > 0 ? String(clients[0].id) : r.sendTarget,
         data,
-        sendHex: !r.sendAscii,
-        parseEscapes: r.sendAscii && r.parseEscapes,
-      }).catch((e) => setErr(String(e)))
+        sendHex,
+        parseEscapes: sendIsAscii(r.sendEncoding) && r.parseEscapes,
+      }).then(() => bumpCounter((n) => n + 1)).catch((e) => setErr(String(e)))
     }, ms)
     return () => {
       if (loopRef.current) globalThis.clearInterval(loopRef.current)
@@ -1161,7 +860,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
 
   const startSession = async () => {
     setErr(null)
-    const recvHex = !recvAscii
+    const recvHex = !recvIsAscii(recvEncoding)
     const base = { sessionId, webviewLabel }
     try {
       if (mode === 'tcp_server') {
@@ -1171,7 +870,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
           return
         }
         await invoke('nc_start_session', {
-          params: { ...base, mode: 'tcp_server', bind, port: p, recvHex },
+          params: { ...base, mode: 'tcp_server', bind, port: p, recvHex, useTls: tcpUseTls },
         })
       } else if (mode === 'tcp_client') {
         const p = Number.parseInt(port, 10)
@@ -1179,20 +878,16 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
           setErr(t('err.portRange'))
           return
         }
-        const linkFields = tcpClientLinkInvokeFields({
-          ...defaultSettings,
-          tcpAutoReconnect,
-          tcpReconnectIntervalMs: Number.parseInt(tcpReconnectIntervalMs, 10) || 3000,
-          tcpReconnectMaxAttempts: Number.parseInt(tcpReconnectMaxAttempts, 10) || 0,
-          tcpReconnectBackoff,
-          tcpHeartbeatEnabled,
-          tcpHeartbeatIntervalMs: Number.parseInt(tcpHeartbeatIntervalMs, 10) || 30_000,
-          tcpHeartbeatTimeoutMs: Number.parseInt(tcpHeartbeatTimeoutMs, 10) || 90_000,
-          tcpHeartbeatHex,
-          tcpTcpKeepalive,
-        })
         await invoke('nc_start_session', {
-          params: { ...base, mode: 'tcp_client', host: remoteHost, port: p, recvHex, ...linkFields },
+          params: {
+            ...base,
+            mode: 'tcp_client',
+            host: remoteHost,
+            port: p,
+            recvHex,
+            useTls: tcpUseTls,
+            ...tcpClientLinkInvokeFields(tcpLinkUi),
+          },
         })
       } else if (mode === 'udp_server') {
         const p = Number.parseInt(port, 10)
@@ -1261,22 +956,24 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
   const invokeSendPayload = useCallback(
     async (rawFragment: string) => {
       setErr(null)
-      const data = sendAscii ? extractAsciiPayloadFromEditor(rawFragment) : extractHexPayloadFromEditor(rawFragment)
-      if (sendAscii) {
-        if (!data) {
-          setErr(t('err.sendEmpty'))
-          return
-        }
+      const expanded = expandVariables(rawFragment)
+      let data: string
+      let sendHex: boolean
+      if (sendIsUtf8(sendEncoding)) {
+        const text = extractUtf8PayloadFromEditor(expanded)
+        if (!text) { setErr(t('err.sendEmpty')); return }
+        data = encodeUtf8ToHex(text)
+        sendHex = true
+      } else if (sendIsAscii(sendEncoding)) {
+        data = extractAsciiPayloadFromEditor(expanded)
+        if (!data) { setErr(t('err.sendEmpty')); return }
+        sendHex = false
       } else {
+        data = extractHexPayloadFromEditor(expanded)
         const hex = compactHexUpper(data)
-        if (hex.length === 0) {
-          setErr(t('err.sendEmpty'))
-          return
-        }
-        if (!isCompleteHexPayload(data)) {
-          setErr(t('err.hexIncomplete'))
-          return
-        }
+        if (hex.length === 0) { setErr(t('err.sendEmpty')); return }
+        if (!isCompleteHexPayload(data)) { setErr(t('err.hexIncomplete')); return }
+        sendHex = true
       }
       try {
         await invoke('nc_send', {
@@ -1284,28 +981,30 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
           webviewLabel,
           target: sendTargetForInvoke,
           data,
-          sendHex: !sendAscii,
-          parseEscapes: sendAscii && parseEscapes,
+          sendHex,
+          parseEscapes: sendIsAscii(sendEncoding) && parseEscapes,
         })
         const now = new Date()
         const ts = now.toLocaleTimeString(undefined, { hour12: false })
         const oneLine = data.replace(/\r?\n/g, ' ')
         const preview = oneLine.length > 56 ? `${oneLine.slice(0, 53)}…` : oneLine
+        const modeLabel = sendIsUtf8(sendEncoding) ? 'UTF-8' : sendIsAscii(sendEncoding) ? 'ASCII' : 'HEX'
         setSendHistory((prev) => {
           const item: SendHistoryItem = {
             id: globalThis.crypto?.randomUUID?.() ?? `h-${Date.now()}`,
             ts,
-            mode: sendAscii ? 'ASCII' : 'HEX',
+            mode: modeLabel,
             preview,
             payload: data,
           }
           return [item, ...prev].slice(0, 80)
         })
+        bumpCounter((n) => n + 1)
       } catch (e) {
         setErr(String(e))
       }
     },
-    [sendAscii, parseEscapes, sessionId, webviewLabel, sendTargetForInvoke, t],
+    [sendEncoding, parseEscapes, sessionId, webviewLabel, sendTargetForInvoke, t],
   )
 
   const sendPresetById = useCallback(
@@ -1332,7 +1031,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
         const next = el
           ? prev.slice(0, el.selectionStart) + payload + prev.slice(el.selectionEnd)
           : (prev ? `${prev}\n` : '') + payload
-        return sendAscii ? next : formatHexEditorBody(next)
+        return sendIsAscii(sendEncoding) ? next : formatHexEditorBody(next)
       }
       if (!el) {
         setSendPresets((ps) =>
@@ -1352,7 +1051,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
         ta.setSelectionRange(pos, pos)
       })
     },
-    [loopPresetId, sendAscii],
+    [loopPresetId, sendEncoding],
   )
 
   const disconnect = async () => {
@@ -1381,12 +1080,52 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
 
   const clearLog = () => setLines([])
 
+  useEffect(() => {
+    if (!active) return
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey
+      if (mod && e.key === 'f') {
+        e.preventDefault()
+        setLogSearchVisible(true)
+        requestAnimationFrame(() => logSearchInputRef.current?.focus())
+        return
+      }
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (mod && e.key === 'Enter') {
+        e.preventDefault()
+        void sendEditorSelectionOrDocument()
+      } else if (mod && e.key === 'l') {
+        e.preventDefault()
+        clearLog()
+      }
+    }
+    const clickHandler = () => setCtxMenu(null)
+    window.addEventListener('keydown', handler)
+    window.addEventListener('click', clickHandler)
+    return () => {
+      window.removeEventListener('keydown', handler)
+      window.removeEventListener('click', clickHandler)
+    }
+  }, [active, sendEditorSelectionOrDocument])
+
   const exportLog = () => {
     const blob = new Blob([JSON.stringify(lines, null, 2)], { type: 'application/json;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
     a.download = `netocto-${sessionId}-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const exportPcapFile = () => {
+    const isUdp = mode === 'udp_server' || mode === 'udp_client'
+    const blob = exportPcap(lines, isUdp)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `netocto-${sessionId}-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.pcap`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -1464,8 +1203,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     setRemotePort(d.remotePort)
     setUdpTargetKind(d.udpTargetKind ?? 'unicast')
     setUdpMulticastGroups(d.udpMulticastGroups?.length ? [...d.udpMulticastGroups] : [])
-    setRecvAscii(d.recvAscii)
-    setSendAscii(d.sendAscii)
+    setRecvEncoding(effectiveRecvEncoding(d))
+    setSendEncoding(effectiveSendEncoding(d))
     setParseEscapes(d.parseEscapes)
     setLoopSend(d.loopSend)
     setLoopMs(d.loopMs)
@@ -1474,15 +1213,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
     setHideRecv(d.hideRecv)
     setAutoScroll(d.autoScroll)
     setCenterSplitRatio(clampCenterSplitRatio(d.centerSplitRatio ?? defaultSettings.centerSplitRatio ?? 0.5))
-    setTcpAutoReconnect(d.tcpAutoReconnect ?? true)
-    setTcpReconnectIntervalMs(String(d.tcpReconnectIntervalMs ?? 3000))
-    setTcpReconnectMaxAttempts(String(d.tcpReconnectMaxAttempts ?? 0))
-    setTcpReconnectBackoff(d.tcpReconnectBackoff ?? true)
-    setTcpHeartbeatEnabled(d.tcpHeartbeatEnabled ?? false)
-    setTcpHeartbeatIntervalMs(String(d.tcpHeartbeatIntervalMs ?? 30_000))
-    setTcpHeartbeatTimeoutMs(String(d.tcpHeartbeatTimeoutMs ?? 90_000))
-    setTcpHeartbeatHex(d.tcpHeartbeatHex ?? '00')
-    setTcpTcpKeepalive(d.tcpTcpKeepalive ?? false)
+    setTcpUseTls(d.tcpUseTls ?? false)
+    setTcpLinkUi(tcpLinkFromPersist(d))
     setTcpLink(TCP_LINK_IDLE)
     const sp = normalizeSendPresetsFromPersist(d)
     setSendPresets(sp.presets)
@@ -1492,8 +1224,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
 
   return (
     <div className={active ? 'flex min-h-0 flex-1 flex-col' : 'hidden min-h-0 flex-1 flex-col'}>
-      <div className="flex min-h-0 flex-1 flex-row overflow-hidden bg-[#0a0a0b]">
-          <aside className="flex w-72 shrink-0 flex-col space-y-4 overflow-y-auto border-r border-zinc-800/60 bg-[#0a0a0b] p-3 text-xs custom-scrollbar">
+      <div className="flex min-h-0 flex-1 flex-row overflow-hidden bg-[var(--nc-bg-primary)]">
+          <aside className="flex w-72 shrink-0 flex-col space-y-4 overflow-y-auto border-r nc-border bg-[var(--nc-bg-primary)] p-3 text-xs custom-scrollbar">
             <div className="flex min-h-0 flex-1 flex-col gap-3">
             <NcConfigCard
               title={t('session.cardSession')}
@@ -1542,25 +1274,25 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 }
               }}
             >
-              <Select.Trigger id={`${idPrefix}-nc-mode`} className={`mb-0 ${ZINC_TRIGGER}`}>
+              <Select.Trigger id={`${idPrefix}-nc-mode`} className={`mb-0 ${NC_SELECT_TRIGGER}`}>
                 <Select.Value />
                 <Select.Indicator />
               </Select.Trigger>
               <Select.Popover placement="bottom start" className={LB_POPOVER}>
                 <ListBox className={LB_LIST}>
-                  <ListBox.Item id="tcp_server" textValue={t('mode.tcpServer')} className="text-xs text-zinc-100">
+                  <ListBox.Item id="tcp_server" textValue={t('mode.tcpServer')} className="text-xs text-[var(--nc-text-primary)]">
                     {t('mode.tcpServer')}
                     <ListBox.ItemIndicator />
                   </ListBox.Item>
-                  <ListBox.Item id="tcp_client" textValue={t('mode.tcpClient')} className="text-xs text-zinc-100">
+                  <ListBox.Item id="tcp_client" textValue={t('mode.tcpClient')} className="text-xs text-[var(--nc-text-primary)]">
                     {t('mode.tcpClient')}
                     <ListBox.ItemIndicator />
                   </ListBox.Item>
-                  <ListBox.Item id="udp_server" textValue={t('mode.udpServer')} className="text-xs text-zinc-100">
+                  <ListBox.Item id="udp_server" textValue={t('mode.udpServer')} className="text-xs text-[var(--nc-text-primary)]">
                     {t('mode.udpServer')}
                     <ListBox.ItemIndicator />
                   </ListBox.Item>
-                  <ListBox.Item id="udp_client" textValue={t('mode.udpClient')} className="text-xs text-zinc-100">
+                  <ListBox.Item id="udp_client" textValue={t('mode.udpClient')} className="text-xs text-[var(--nc-text-primary)]">
                     {t('mode.udpClient')}
                     <ListBox.ItemIndicator />
                   </ListBox.Item>
@@ -1577,7 +1309,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   disabled={sessionRunning}
                   onChange={(e) => setRemoteHost(e.target.value)}
                   variant="secondary"
-                  className={`mb-1.5 ${ZINC_INPUT}`}
+                  className={`mb-1.5 ${NC_INPUT}`}
                 />
               </>
             ) : null}
@@ -1595,14 +1327,14 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   isDisabled={sessionRunning}
                   className="mb-1.5"
                 >
-                  <Select.Trigger id={`${idPrefix}-nc-bind`} className={`mb-0 ${ZINC_TRIGGER}`}>
+                  <Select.Trigger id={`${idPrefix}-nc-bind`} className={`mb-0 ${NC_SELECT_TRIGGER}`}>
                     <Select.Value />
                     <Select.Indicator />
                   </Select.Trigger>
                   <Select.Popover placement="bottom start" className={LB_POPOVER}>
                     <ListBox className={LB_LIST}>
-                      {BIND_PRESETS.map((b) => (
-                        <ListBox.Item key={b} id={b} textValue={b} className="font-mono text-xs text-zinc-100">
+                      {bindOptions.map((b) => (
+                        <ListBox.Item key={b} id={b} textValue={b} className="font-mono text-xs text-[var(--nc-text-primary)]">
                           {b}
                           <ListBox.ItemIndicator />
                         </ListBox.Item>
@@ -1624,36 +1356,29 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   disabled={sessionRunning}
                   onChange={(e) => setPort(e.target.value)}
                   variant="secondary"
-                  className={`mb-1.5 ${ZINC_INPUT}`}
+                  className={`mb-1.5 ${NC_INPUT}`}
                 />
               </>
+            ) : null}
+
+            {(mode === 'tcp_server' || mode === 'tcp_client') ? (
+              <NcCheckboxRow
+                checked={tcpUseTls}
+                onChange={setTcpUseTls}
+                label={t('session.tcpUseTls')}
+                disabled={sessionRunning}
+              />
             ) : null}
 
             </NcConfigCard>
 
             {mode === 'tcp_client' ? (
-              <NcTcpLinkCard
+              <TcpLinkConfigCard
                 idPrefix={idPrefix}
                 t={t}
                 sessionRunning={sessionRunning}
-                autoReconnect={tcpAutoReconnect}
-                onAutoReconnect={setTcpAutoReconnect}
-                reconnectIntervalMs={tcpReconnectIntervalMs}
-                onReconnectIntervalMs={setTcpReconnectIntervalMs}
-                reconnectMaxAttempts={tcpReconnectMaxAttempts}
-                onReconnectMaxAttempts={setTcpReconnectMaxAttempts}
-                reconnectBackoff={tcpReconnectBackoff}
-                onReconnectBackoff={setTcpReconnectBackoff}
-                heartbeatEnabled={tcpHeartbeatEnabled}
-                onHeartbeatEnabled={setTcpHeartbeatEnabled}
-                heartbeatIntervalMs={tcpHeartbeatIntervalMs}
-                onHeartbeatIntervalMs={setTcpHeartbeatIntervalMs}
-                heartbeatTimeoutMs={tcpHeartbeatTimeoutMs}
-                onHeartbeatTimeoutMs={setTcpHeartbeatTimeoutMs}
-                heartbeatHex={tcpHeartbeatHex}
-                onHeartbeatHex={setTcpHeartbeatHex}
-                tcpKeepalive={tcpTcpKeepalive}
-                onTcpKeepalive={setTcpTcpKeepalive}
+                settings={tcpLinkUi}
+                onChange={patchTcpLinkUi}
                 link={tcpLink}
               />
             ) : null}
@@ -1678,7 +1403,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
             ) : null}
 
             <NcConfigCard title={t('session.cardRx')}>
-            <NcEncodingToggle ascii={recvAscii} onAscii={() => setRecvAscii(true)} onHex={() => setRecvAscii(false)} />
+            <NcEncodingToggle encoding={recvEncoding} onChange={(e) => setRecvEncoding(e as RecvEncoding)} />
             <NcCheckboxRow checked={showAsLog} onChange={setShowAsLog} label={t('session.recvShowLog')} />
             <NcCheckboxRow checked={wrapRecv} onChange={setWrapRecv} label={t('session.recvWrap')} />
             <NcCheckboxRow checked={hideRecv} onChange={setHideRecv} label={t('session.recvHide')} />
@@ -1700,7 +1425,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   }}
                   className="text-xs"
                 >
-                  <Select.Trigger id={`${idPrefix}-loop-preset`} className={ZINC_TRIGGER}>
+                  <Select.Trigger id={`${idPrefix}-loop-preset`} className={NC_SELECT_TRIGGER}>
                     <Select.Value />
                     <Select.Indicator />
                   </Select.Trigger>
@@ -1711,7 +1436,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                           key={sp.id}
                           id={sp.id}
                           textValue={sp.title.trim() || `#${i + 1}`}
-                          className="font-mono text-xs text-zinc-100"
+                          className="font-mono text-xs text-[var(--nc-text-primary)]"
                         >
                           {sp.title.trim() || `#${i + 1}`}
                           <ListBox.ItemIndicator />
@@ -1726,12 +1451,26 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 onChange={(e) => setLoopMs(e.target.value)}
                 disabled={!loopSend}
                 variant="secondary"
-                className={`h-8 w-16 shrink-0 text-right ${ZINC_INPUT}`}
+                className={`h-8 w-16 shrink-0 text-right ${NC_INPUT}`}
                 aria-label={t('session.loopMsAria')}
               />
-              <span className="shrink-0 pb-2 text-zinc-500 sm:pb-0">ms</span>
+              <span className="shrink-0 pb-2 text-[var(--nc-text-muted)] sm:pb-0">ms</span>
             </div>
-            <p className="mt-1 text-[10px] leading-snug text-zinc-500">{t('session.loopPresetEditorHint')}</p>
+            <p className="mt-1 text-[10px] leading-snug text-[var(--nc-text-muted)]">{t('session.loopPresetEditorHint')}</p>
+            <p className="mt-1 text-[10px] leading-snug text-[var(--nc-text-muted)]">{t('session.varSubHint')}</p>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="font-mono text-[10px] text-[var(--nc-text-label)]">
+                {t('session.counter')} = <span className="text-[var(--nc-text-body)]">{getVarCounter()}</span>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="min-h-0 px-1.5 py-0 text-[9px] text-[var(--nc-text-label)] hover:text-[var(--nc-text-body)] data-[hover=true]:bg-[var(--nc-bg-elevated)]"
+                onPress={() => { resetVarCounter(); bumpCounter((n) => n + 1) }}
+              >
+                {t('session.resetCounter')}
+              </Button>
+            </div>
             <div className="custom-scrollbar mt-2 max-h-36 space-y-1 overflow-y-auto pr-0.5">
               {sendPresets.map((p) => (
                 <div
@@ -1741,7 +1480,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                     setLoopPresetId(p.id)
                   }}
                   className={`flex cursor-pointer items-center gap-1 rounded-lg border p-1.5 ${
-                    p.id === loopPresetId ? 'border-[#006FEE]/40 bg-[#006FEE]/10' : 'border-zinc-800/60 bg-[#27272a]/80'
+                    p.id === loopPresetId ? 'border-[#006FEE]/40 bg-[#006FEE]/10' : 'nc-border bg-[var(--nc-bg-elevated)]/80'
                   }`}
                 >
                   <Button
@@ -1764,7 +1503,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                     variant="secondary"
                     placeholder={t('session.presetTitlePlaceholder')}
                     aria-label={t('session.presetTitlePlaceholder')}
-                    className="h-7 min-h-7 min-w-0 flex-1 border-zinc-700/50 bg-[#0a0a0b]/40 py-0 font-mono text-[10px] text-zinc-200 sm:text-[11px]"
+                    className="h-7 min-h-7 min-w-0 flex-1 border-[rgb(var(--nc-border-default)/0.5)] bg-[var(--nc-bg-primary)]/40 py-0 font-mono text-[10px] text-[var(--nc-text-body)] sm:text-[11px]"
                   />
                   {sendPresets.length > 1 ? (
                     <Button
@@ -1772,7 +1511,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                       size="sm"
                       variant="ghost"
                       aria-label={t('session.removePreset')}
-                      className="h-7 w-7 shrink-0 text-zinc-500 hover:text-red-400"
+                      className="h-7 w-7 shrink-0 text-[var(--nc-text-muted)] hover:text-red-400"
                       onPress={() =>
                         setSendPresets((ps) => {
                           if (ps.length <= 1) return ps
@@ -1790,7 +1529,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
               fullWidth
               variant="outline"
               size="sm"
-              className="mt-1 border-dashed border-zinc-600 text-xs text-zinc-300"
+              className="mt-1 border-dashed border-[rgb(var(--nc-border-default)/0.65)] text-xs text-[var(--nc-text-body)]"
               onPress={() =>
                 setSendPresets((ps) => [...ps, { id: newSendPresetId(), title: '', body: '' }])
               }
@@ -1802,16 +1541,16 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
             </div>
           </aside>
 
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 bg-[#0a0a0b] p-3">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 bg-[var(--nc-bg-primary)] p-3">
             {active ? (
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1 rounded-xl border border-zinc-800/60 bg-[#18181b] p-1 shadow-sm">
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1 rounded-xl border nc-border bg-[var(--nc-bg-surface)] p-1 shadow-sm">
                 <Button
                   isIconOnly
                   size="sm"
                   variant="ghost"
                   aria-label={t('session.exportLog')}
                   onPress={exportLog}
-                  className="min-h-0 min-w-0 p-1.5 text-zinc-400 hover:text-zinc-100 data-[hover=true]:bg-[#27272a]"
+                  className="min-h-0 min-w-0 p-1.5 text-[var(--nc-text-label)] hover:text-[var(--nc-text-primary)] data-[hover=true]:bg-[var(--nc-bg-elevated)]"
                 >
                   <Download className="h-3.5 w-3.5" />
                 </Button>
@@ -1819,38 +1558,30 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   isIconOnly
                   size="sm"
                   variant="ghost"
+                  aria-label={t('session.exportPcap')}
+                  onPress={exportPcapFile}
+                  className="min-h-0 min-w-0 p-1.5 text-[var(--nc-text-label)] hover:text-[var(--nc-text-primary)] data-[hover=true]:bg-[var(--nc-bg-elevated)]"
+                >
+                  <FileArchive className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
                   aria-label={t('session.importLog')}
                   onPress={() => fileImportRef.current?.click()}
-                  className="min-h-0 min-w-0 p-1.5 text-zinc-400 hover:text-zinc-100 data-[hover=true]:bg-[#27272a]"
+                  className="min-h-0 min-w-0 p-1.5 text-[var(--nc-text-label)] hover:text-[var(--nc-text-primary)] data-[hover=true]:bg-[var(--nc-bg-elevated)]"
                 >
                   <Upload className="h-3.5 w-3.5" />
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
-                  className="min-h-0 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-100 data-[hover=true]:bg-[#27272a]"
+                  className="min-h-0 px-2 py-1 text-[10px] text-[var(--nc-text-label)] hover:text-[var(--nc-text-primary)] data-[hover=true]:bg-[var(--nc-bg-elevated)]"
                   aria-label={t('session.defaultsAria')}
                   onPress={resetUiDefaults}
                 >
                   {t('session.defaults')}
-                </Button>
-                <Button
-                  isIconOnly
-                  size="sm"
-                  variant="ghost"
-                  className="min-h-0 min-w-0 p-1.5 text-zinc-400 hover:text-zinc-100 data-[hover=true]:bg-[#27272a]"
-                  aria-label={webviewLabel}
-                >
-                  <Info className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  isIconOnly
-                  size="sm"
-                  variant="ghost"
-                  className="min-h-0 min-w-0 p-1.5 text-zinc-400 hover:text-zinc-100 data-[hover=true]:bg-[#27272a]"
-                  aria-label="NetOcto"
-                >
-                  <GitBranch className="h-3.5 w-3.5" />
                 </Button>
               </div>
             ) : null}
@@ -1861,14 +1592,14 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 style={logPaneStyle}
                 className="flex min-h-0 flex-col overflow-hidden"
               >
-              <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-[#18181b] shadow-lg">
-                <div className="sticky top-0 z-10 flex flex-shrink-0 items-center justify-between border-b border-zinc-800/60 bg-[#18181b]/95 px-3 py-2 backdrop-blur-md">
+              <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border nc-border bg-[var(--nc-bg-surface)] shadow-lg">
+                <div className="sticky top-0 z-10 flex flex-shrink-0 items-center justify-between border-b nc-border bg-[var(--nc-bg-surface)]/95 px-3 py-2 backdrop-blur-md">
                   <div className="flex min-w-0 flex-1 items-center gap-2">
-                    <span className="shrink-0 text-xs font-semibold text-zinc-100">{t('session.output')}</span>
-                    <span className="shrink-0 rounded-full bg-[#27272a] px-1.5 py-0.5 text-[9px] font-bold tabular-nums tracking-wide text-zinc-400">
+                    <span className="shrink-0 text-xs font-semibold text-[var(--nc-text-primary)]">{t('session.output')}</span>
+                    <span className="shrink-0 rounded-full bg-[var(--nc-bg-elevated)] px-1.5 py-0.5 text-[9px] font-bold tabular-nums tracking-wide text-[var(--nc-text-label)]">
                       {lines.length}
                     </span>
-                    <span className="min-w-0 truncate font-mono text-[10px] text-zinc-500" title={logAddr}>
+                    <span className="min-w-0 truncate font-mono text-[10px] text-[var(--nc-text-muted)]" title={logAddr}>
                       {logAddr}
                     </span>
                   </div>
@@ -1877,8 +1608,19 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                       isIconOnly
                       size="sm"
                       variant="ghost"
-                      className="min-h-0 min-w-0 p-1 text-zinc-400 hover:text-zinc-200 data-[hover=true]:bg-[#27272a]"
-                      aria-label="Filter"
+                      aria-label={logSearchVisible ? t('session.logSearchClose') : 'Filter'}
+                      onPress={() => {
+                        setLogSearchVisible((v) => {
+                          if (v) setLogSearch('')
+                          return !v
+                        })
+                        if (!logSearchVisible) {
+                          requestAnimationFrame(() => logSearchInputRef.current?.focus())
+                        }
+                      }}
+                      className={`min-h-0 min-w-0 p-1 data-[hover=true]:bg-[var(--nc-bg-elevated)] ${
+                        logSearchVisible ? 'text-[#5EA2EF]' : 'text-[var(--nc-text-label)] hover:text-[var(--nc-text-body)]'
+                      }`}
                     >
                       <Filter className="h-3.5 w-3.5" />
                     </Button>
@@ -1888,27 +1630,57 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                       variant="ghost"
                       aria-label={t('session.clearLog')}
                       onPress={clearLog}
-                      className="min-h-0 min-w-0 p-1 text-zinc-400 hover:text-red-400 data-[hover=true]:bg-red-500/10"
+                      className="min-h-0 min-w-0 p-1 text-[var(--nc-text-label)] hover:text-red-400 data-[hover=true]:bg-red-500/10"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>
+                {logSearchVisible ? (
+                  <div className="flex shrink-0 items-center gap-1.5 border-b nc-border bg-[var(--nc-bg-surface)]/90 px-3 py-1.5">
+                    <input
+                      ref={logSearchInputRef}
+                      type="text"
+                      value={logSearch}
+                      onChange={(e) => setLogSearch(e.target.value)}
+                      placeholder={t('session.logSearchPlaceholder')}
+                      className="min-w-0 flex-1 rounded-md border border-[rgb(var(--nc-border-default)/0.5)] bg-[var(--nc-bg-primary)] px-2 py-1 font-mono text-xs text-[var(--nc-text-primary)] outline-none placeholder:text-[var(--nc-text-muted)] focus:border-[#006FEE]/50"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          setLogSearchVisible(false)
+                          setLogSearch('')
+                        }
+                      }}
+                    />
+                    {logSearch ? (
+                      <span className="shrink-0 font-mono text-[9px] tabular-nums text-[var(--nc-text-muted)]">
+                        {filteredLines?.length ?? 0}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div
                   ref={logRef}
                   className={`nc-selectable custom-scrollbar min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto p-1.5 ${
                     wrapRecv ? 'break-words' : 'break-all'
                   }`}
                 >
-                  {lines.map((l, i) => {
+                  {(logSearch ? (filteredLines ?? []) : lines).map((l, i) => {
                     if (hideRecv && l.kind === 'recv') return null
                     const badge = logBadgeForKind(l.kind)
                     const lineTone =
-                      l.kind === 'recv' ? 'text-zinc-300' : l.kind === 'send' || l.kind === 'send-data' ? 'text-[#5EA2EF]' : 'text-zinc-300'
+                      l.kind === 'recv' ? 'text-[var(--nc-text-body)]' : l.kind === 'send' || l.kind === 'send-data' ? 'text-[#5EA2EF]' : 'text-[var(--nc-text-body)]'
                     return (
                       <div
                         key={`${l.ts}-${i}-${l.kind}`}
-                        className="group flex gap-2 rounded-lg border border-transparent p-2 transition-colors hover:border-zinc-800/60 hover:bg-[#27272a]/50"
+                        className="group flex cursor-default gap-2 rounded-lg border border-transparent p-2 transition-colors hover:nc-border hover:bg-[var(--nc-bg-elevated)]/50"
+                        onDoubleClick={() => {
+                          void navigator.clipboard.writeText(l.line)
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          setCtxMenu({ x: e.clientX, y: e.clientY, line: l })
+                        }}
                       >
                         <div
                           className={`mt-0.5 flex-shrink-0 self-start rounded px-1.5 py-0.5 text-[9px] font-bold ${badge.className}`}
@@ -1917,13 +1689,18 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="mb-1 flex items-center justify-between">
-                            <span className="text-[10px] font-medium text-zinc-500">{l.ts}</span>
+                            <span className="text-[10px] font-medium text-[var(--nc-text-muted)]">{l.ts}</span>
                           </div>
-                          <div className={`font-mono text-xs leading-relaxed ${lineTone}`}>{l.line}</div>
+                          <div className={`font-mono text-xs leading-relaxed ${lineTone}`}>
+                            {logSearch ? highlightMatches(l.line, logSearch) : l.line}
+                          </div>
                         </div>
                       </div>
                     )
                   })}
+                  {logSearch && filteredLines?.length === 0 ? (
+                    <p className="py-6 text-center text-xs text-[var(--nc-text-muted)]">{t('session.logSearchNoMatches')}</p>
+                  ) : null}
                 </div>
               </div>
               </div>
@@ -1933,8 +1710,8 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 aria-label={t('session.splitResize')}
                 title={t('session.splitResizeHint')}
               >
-                <div className="mx-3 flex h-full min-w-0 flex-1 items-center justify-center rounded-sm border-y border-transparent transition-colors group-hover:border-zinc-700/50 group-hover:bg-zinc-900/70 group-active:border-[#006FEE]/35 group-active:bg-[#006FEE]/10">
-                  <div className="h-0.5 w-12 shrink-0 rounded-full bg-zinc-700/80 transition-colors group-hover:bg-zinc-500 group-active:bg-[#006FEE]/70" />
+                <div className="mx-3 flex h-full min-w-0 flex-1 items-center justify-center rounded-sm border-y border-transparent transition-colors group-hover:border-[rgb(var(--nc-border-default)/0.5)] group-hover:bg-[color-mix(in_srgb,var(--nc-bg-elevated)_70%,transparent)] group-active:border-[#006FEE]/35 group-active:bg-[#006FEE]/10">
+                  <div className="h-0.5 w-12 shrink-0 rounded-full bg-[var(--nc-bg-input-hover)] transition-colors group-hover:bg-[var(--nc-text-faint)] group-active:bg-[#006FEE]/70" />
                 </div>
               </div>
 
@@ -1942,15 +1719,14 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 style={editorPaneStyle}
                 className="flex min-h-0 flex-col overflow-hidden"
               >
-            <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-800/60 bg-[#18181b] shadow-lg">
-              <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/60 bg-[#18181b]/95 px-3 py-2 backdrop-blur-md">
+            <div className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border nc-border bg-[var(--nc-bg-surface)] shadow-lg">
+              <div className="flex shrink-0 items-center justify-between gap-2 border-b nc-border bg-[var(--nc-bg-surface)]/95 px-3 py-2 backdrop-blur-md">
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
-                  <span className="text-xs font-semibold text-zinc-100">{t('session.messageEditor')}</span>
+                  <span className="text-xs font-semibold text-[var(--nc-text-primary)]">{t('session.messageEditor')}</span>
                   <NcEncodingToggle
                     compact
-                    ascii={sendAscii}
-                    onAscii={() => setSendAscii(true)}
-                    onHex={() => setSendAscii(false)}
+                    encoding={sendEncoding}
+                    onChange={(e) => setSendEncoding(e as SendEncoding)}
                   />
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
@@ -1958,7 +1734,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                     size="sm"
                     variant={showSendHistory ? 'secondary' : 'ghost'}
                     className={`flex min-h-0 items-center gap-1 px-2 py-1 text-[10px] font-medium ${
-                      showSendHistory ? 'bg-zinc-700/80 text-zinc-100' : 'text-zinc-300 data-[hover=true]:bg-zinc-800'
+                      showSendHistory ? 'bg-[var(--nc-bg-input-hover)] text-[var(--nc-text-primary)]' : 'text-[var(--nc-text-body)] data-[hover=true]:bg-[var(--nc-bg-elevated)]'
                     }`}
                     onPress={() => setShowSendHistory((v) => !v)}
                   >
@@ -1978,7 +1754,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   </Button>
                 </div>
               </div>
-              <div className="flex shrink-0 flex-wrap items-end gap-1.5 border-b border-zinc-800/60 bg-[#18181b]/90 px-3 py-2">
+              <div className="flex shrink-0 flex-wrap items-end gap-1.5 border-b nc-border bg-[var(--nc-bg-surface)]/90 px-3 py-2">
                 <div className="min-w-0 max-w-[min(100%,14rem)] flex-1 sm:max-w-none">
                   <NcFieldLabel htmlFor={`${idPrefix}-tx-target`}>
                     {mode === 'tcp_client' ? t('session.fieldServerLink') : t('session.fieldTarget')}
@@ -1994,7 +1770,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                     }}
                     className="text-xs"
                   >
-                    <Select.Trigger id={`${idPrefix}-tx-target`} className={ZINC_TRIGGER_SM}>
+                    <Select.Trigger id={`${idPrefix}-tx-target`} className={NC_SELECT_TRIGGER_SM}>
                       <Select.Value />
                       <Select.Indicator />
                     </Select.Trigger>
@@ -2004,7 +1780,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                           <ListBox.Item
                             id="all"
                             textValue={`${t('session.allTargets')} (${clients.length})`}
-                            className="text-xs text-zinc-100"
+                            className="text-xs text-[var(--nc-text-primary)]"
                           >
                             {t('session.allTargets')} ({clients.length})
                             <ListBox.ItemIndicator />
@@ -2015,7 +1791,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                             key={c.id}
                             id={String(c.id)}
                             textValue={`#${c.id} ${c.peer}`}
-                            className="text-xs text-zinc-100"
+                            className="text-xs text-[var(--nc-text-primary)]"
                           >
                             #{c.id} {c.peer}
                             <ListBox.ItemIndicator />
@@ -2030,7 +1806,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                   variant="outline"
                   isDisabled={!sessionRunning}
                   onPress={() => void disconnect()}
-                  className="min-h-7 shrink-0 border-zinc-600 text-[11px] text-zinc-200 sm:min-h-8"
+                  className="min-h-7 shrink-0 border-[rgb(var(--nc-border-default)/0.65)] text-[11px] text-[var(--nc-text-body)] sm:min-h-8"
                 >
                   {t('session.disconnect')}
                 </Button>
@@ -2044,16 +1820,16 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                       ps.map((p) => (p.id === loopPresetId ? { ...p, body: '' } : p)),
                     )
                   }
-                  className="h-7 w-7 min-w-7 shrink-0 text-zinc-400 data-[hover=true]:bg-[#27272a] sm:h-8 sm:w-8 sm:min-w-8"
+                  className="h-7 w-7 min-w-7 shrink-0 text-[var(--nc-text-label)] data-[hover=true]:bg-[var(--nc-bg-elevated)] sm:h-8 sm:w-8 sm:min-w-8"
                 >
                   <Trash2 size={14} />
                 </Button>
               </div>
               <div className="relative flex min-h-0 flex-1 flex-row overflow-hidden">
-                <div className="pointer-events-none w-9 shrink-0 overflow-hidden border-r border-zinc-800/60 bg-[#18181b] py-3">
+                <div className="pointer-events-none w-9 shrink-0 overflow-hidden border-r nc-border bg-[var(--nc-bg-surface)] py-3">
                   <div
                     ref={lineGutterInnerRef}
-                    className="text-center font-mono text-[10px] leading-[1.375rem] text-zinc-600 select-none will-change-transform"
+                    className="text-center font-mono text-[10px] leading-[1.375rem] text-[var(--nc-text-faint)] select-none will-change-transform"
                   >
                     {editorLineNumbers.map((n) => (
                       <div key={n} className="h-[1.375rem] shrink-0">
@@ -2078,7 +1854,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                     value={loopPresetBody}
                     onChange={(e) => {
                       let v = e.target.value
-                      if (!sendAscii) v = formatHexEditorBody(v)
+                      if (sendIsHex(sendEncoding)) v = formatHexEditorBody(v)
                       setSendPresets((ps) =>
                         ps.map((p) => (p.id === loopPresetId ? { ...p, body: v } : p)),
                       )
@@ -2090,17 +1866,17 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                       const hiInner = editorHighlightInnerRef.current
                       if (hiInner) hiInner.style.transform = `translateY(-${st}px)`
                     }}
-                    className="nc-selectable custom-scrollbar absolute inset-0 z-10 box-border resize-none overflow-auto border-0 bg-transparent px-3 py-3 font-mono text-xs leading-[1.375rem] text-transparent caret-zinc-200 outline-none ring-0 placeholder:text-zinc-600 selection:bg-[#006FEE]/25 focus:outline-none"
+                    className="nc-selectable custom-scrollbar absolute inset-0 z-10 box-border resize-none overflow-auto border-0 bg-transparent px-3 py-3 font-mono text-xs leading-[1.375rem] text-transparent caret-zinc-200 outline-none ring-0 placeholder:text-[var(--nc-text-faint)] selection:bg-[#006FEE]/25 focus:outline-none"
                     style={{ WebkitTextFillColor: 'transparent' }}
                     placeholder={
-                      sendAscii ? t('session.payloadPlaceholder') : t('session.payloadPlaceholderHex')
+                      sendIsUtf8(sendEncoding) ? t('session.payloadPlaceholderUtf8') : sendIsAscii(sendEncoding) ? t('session.payloadPlaceholder') : t('session.payloadPlaceholderHex')
                     }
                   />
                 </div>
                 {showSendHistory ? (
-                  <div className="absolute inset-y-0 right-0 z-20 flex w-[min(100%,17rem)] flex-col border-l border-zinc-800/80 bg-[#141416] shadow-2xl sm:w-64">
-                    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/60 px-2.5 py-2">
-                      <span className="truncate text-[11px] font-semibold text-zinc-200">
+                  <div className="absolute inset-y-0 right-0 z-20 flex w-[min(100%,17rem)] flex-col border-l nc-border bg-[var(--nc-bg-inset)] shadow-2xl sm:w-64">
+                    <div className="flex shrink-0 items-center justify-between gap-2 border-b nc-border px-2.5 py-2">
+                      <span className="truncate text-[11px] font-semibold text-[var(--nc-text-body)]">
                         {t('session.historyPanelTitle')}
                       </span>
                       <Button
@@ -2108,7 +1884,7 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                         size="sm"
                         variant="ghost"
                         aria-label={t('session.closeHistoryPanel')}
-                        className="h-7 w-7 shrink-0 text-zinc-400"
+                        className="h-7 w-7 shrink-0 text-[var(--nc-text-label)]"
                         onPress={() => setShowSendHistory(false)}
                       >
                         <X size={16} />
@@ -2116,24 +1892,24 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                     </div>
                     <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
                       {sendHistory.length === 0 ? (
-                        <p className="px-3 py-4 text-center text-[11px] text-zinc-500">{t('session.historyEmpty')}</p>
+                        <p className="px-3 py-4 text-center text-[11px] text-[var(--nc-text-muted)]">{t('session.historyEmpty')}</p>
                       ) : (
                         sendHistory.map((h) => (
                           <div
                             key={h.id}
-                            className="border-b border-zinc-800/50 px-2.5 py-2 last:border-b-0"
+                            className="border-b border-[rgb(var(--nc-border-default)/0.5)] px-2.5 py-2 last:border-b-0"
                           >
-                            <div className="mb-1 flex items-center justify-between gap-2 text-[9px] text-zinc-500">
+                            <div className="mb-1 flex items-center justify-between gap-2 text-[9px] text-[var(--nc-text-muted)]">
                               <span>{h.ts}</span>
-                              <span className="shrink-0 font-mono text-zinc-400">{h.mode}</span>
+                              <span className="shrink-0 font-mono text-[var(--nc-text-label)]">{h.mode}</span>
                             </div>
-                            <p className="mb-2 line-clamp-3 break-all font-mono text-[10px] leading-snug text-zinc-300">
+                            <p className="mb-2 line-clamp-3 break-all font-mono text-[10px] leading-snug text-[var(--nc-text-body)]">
                               {h.preview}
                             </p>
                             <Button
                               size="sm"
                               variant="outline"
-                              className="h-7 min-h-0 w-full border-zinc-600 text-[10px] text-zinc-200"
+                              className="h-7 min-h-0 w-full border-[rgb(var(--nc-border-default)/0.65)] text-[10px] text-[var(--nc-text-body)]"
                               onPress={() => insertHistoryPayload(h.payload)}
                             >
                               {t('session.insertFromHistory')}
@@ -2146,54 +1922,42 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
                 ) : null}
               </div>
               {err ? (
-                <Text type="body-sm" className="shrink-0 border-t border-zinc-800/60 bg-[#18181b] px-3 py-1.5 text-red-400">
+                <Text type="body-sm" className="shrink-0 border-t nc-border bg-[var(--nc-bg-surface)] px-3 py-1.5 text-red-400">
                   {err}
                 </Text>
               ) : null}
             </div>
               </div>
               </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800/60 bg-[#18181b] px-3 py-1.5 shadow-sm">
-              <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] font-medium text-zinc-400">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border nc-border bg-[var(--nc-bg-surface)] px-3 py-1.5 shadow-sm">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] font-medium text-[var(--nc-text-label)]">
                 <span className="flex items-center gap-1">
-                  TX_BYT <span className="text-zinc-200">{stats.tx_bytes}</span>
+                  TX_BYT <span className="text-[var(--nc-text-body)]">{stats.tx_bytes}</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  TX_PKT <span className="text-zinc-200">{stats.tx_pkts}</span>
+                  TX_PKT <span className="text-[var(--nc-text-body)]">{stats.tx_pkts}</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  RX_BYT <span className="text-zinc-200">{stats.rx_bytes}</span>
+                  RX_BYT <span className="text-[var(--nc-text-body)]">{stats.rx_bytes}</span>
                 </span>
                 <span className="flex items-center gap-1">
-                  RX_PKT <span className="text-zinc-200">{stats.rx_pkts}</span>
+                  RX_PKT <span className="text-[var(--nc-text-body)]">{stats.rx_pkts}</span>
                 </span>
-                {tabMode === 'tcp_client' && sessionRunning && tcpHeartbeatEnabled ? (
-                  <span className="flex items-center gap-1 text-zinc-500">
+                {tcpClientActive && tcpLinkUi.heartbeatEnabled ? (
+                  <span className="flex items-center gap-1 text-[var(--nc-text-muted)]">
                     HB
-                    <span
-                      className={
-                        tcpLink.heartbeat === 'ok'
-                          ? 'text-[#17c964]'
-                          : tcpLink.heartbeat === 'timeout'
-                            ? 'text-red-400'
-                            : tcpLink.heartbeat === 'waiting'
-                              ? 'text-amber-400'
-                              : 'text-zinc-500'
-                      }
-                    >
-                      {tcpHeartbeatLabel(t, tcpLink.heartbeat)}
-                    </span>
+                    <span className={hbVisual.textClass}>{tcpHeartbeatLabel(t, tcpLink.heartbeat)}</span>
                   </span>
                 ) : null}
-                <span className={`ml-1 flex items-center gap-1 ${linkStatusClass}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${linkDotClass}`} />
+                <span className={`ml-1 flex items-center gap-1 ${linkVisual.textClass}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${linkVisual.dotClass}`} />
                   {linkStatusLabel}
                 </span>
               </div>
               <Button
                 size="sm"
                 variant="ghost"
-                className="min-h-0 px-2 py-0 font-mono text-[9px] font-bold tracking-wider text-zinc-500 hover:text-zinc-300 data-[hover=true]:bg-transparent"
+                className="min-h-0 px-2 py-0 font-mono text-[9px] font-bold tracking-wider text-[var(--nc-text-muted)] hover:text-[var(--nc-text-body)] data-[hover=true]:bg-transparent"
                 onPress={() => void resetStats()}
               >
                 {t('session.resetStats')}
@@ -2202,6 +1966,30 @@ export function NetOctoSession({ sessionId, webviewLabel, active, onTabMeta }: N
             </div>
           </div>
         </div>
+      {ctxMenu ? (
+        <div
+          className="fixed z-50 min-w-[10rem] rounded-lg border border-[rgb(var(--nc-border-default)/0.6)] bg-[var(--nc-bg-surface)] py-1 shadow-2xl"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          onMouseLeave={() => setCtxMenu(null)}
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--nc-text-body)] hover:bg-[var(--nc-bg-elevated)]"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => { void navigator.clipboard.writeText(ctxMenu.line.line); setCtxMenu(null) }}
+          >
+            {t('session.ctxCopyPayload')}
+          </button>
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-[var(--nc-text-body)] hover:bg-[var(--nc-bg-elevated)]"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => { insertHistoryPayload(ctxMenu.line.line); setCtxMenu(null) }}
+          >
+            {t('session.ctxInsertEditor')}
+          </button>
+        </div>
+      ) : null}
       <input ref={fileImportRef} type="file" accept=".json,application/json" className="hidden" onChange={onImportFile} />
     </div>
   )

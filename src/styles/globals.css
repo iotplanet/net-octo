@@ -3,111 +3,315 @@
 @import "@heroui/styles";
 @import "./heroui-density-sm.css";
 
-:root {
+/* ── NetOcto semantic tokens (switch via html[data-theme]) ── */
+:root,
+[data-theme="dark"] {
   --window-control-height: 32px;
-}
-
-/* 桌面应用优化 — NetOcto 暗黑主界面 */
-html {
+  --nc-bg-primary: #0a0a0b;
+  --nc-bg-surface: #18181b;
+  --nc-bg-elevated: #27272a;
+  --nc-bg-inset: #141416;
+  --nc-bg-input: #27272a;
+  --nc-bg-input-hover: #3f3f46;
+  --nc-border-default: 39 39 42;
+  --nc-border-subtle: 63 63 70;
+  --nc-text-primary: #f4f4f5;
+  --nc-text-body: #d4d4d8;
+  --nc-text-label: #a1a1aa;
+  --nc-text-muted: #71717a;
+  --nc-text-faint: #52525b;
+  --nc-accent: #006fee;
+  --nc-accent-hover: #005bc4;
+  --nc-accent-soft: #5ea2ef;
+  --nc-syntax-payload: #5ea2ef;
+  --nc-syntax-comment: #4ade80;
+  --nc-status-ok: #17c964;
+  --nc-status-warn: #fbbf24;
+  --nc-status-err: #ef4444;
+  --nc-selection: rgb(0 111 238 / 0.3);
+  --nc-scrollbar-thumb: #3f3f46;
+  --nc-scrollbar-thumb-hover: #52525b;
+  --nc-glass-top: hsl(240 6% 10% / 0.95);
+  --nc-glass-bottom: hsl(240 6% 8% / 0.88);
+  --nc-aside-top: hsl(240 5% 8% / 0.98);
+  --nc-aside-bottom: hsl(240 6% 5% / 0.99);
+  --background: var(--nc-bg-primary);
+  --foreground: var(--nc-text-primary);
   color-scheme: dark;
 }
 
+[data-theme="light"] {
+  --nc-bg-primary: #fafafa;
+  --nc-bg-surface: #ffffff;
+  --nc-bg-elevated: #f4f4f5;
+  --nc-bg-inset: #f4f4f5;
+  --nc-bg-input: #f4f4f5;
+  --nc-bg-input-hover: #e4e4e7;
+  --nc-border-default: 212 212 216;
+  --nc-border-subtle: 228 228 231;
+  --nc-text-primary: #18181b;
+  --nc-text-body: #3f3f46;
+  --nc-text-label: #52525b;
+  --nc-text-muted: #71717a;
+  --nc-text-faint: #a1a1aa;
+  --nc-accent: #006fee;
+  --nc-accent-hover: #005bc4;
+  --nc-accent-soft: #2563eb;
+  --nc-syntax-payload: #2563eb;
+  --nc-syntax-comment: #16a34a;
+  --nc-status-ok: #16a34a;
+  --nc-status-warn: #d97706;
+  --nc-status-err: #dc2626;
+  --nc-selection: rgb(0 111 238 / 0.22);
+  --nc-scrollbar-thumb: #d4d4d8;
+  --nc-scrollbar-thumb-hover: #a1a1aa;
+  --nc-glass-top: hsl(0 0% 100% / 0.92);
+  --nc-glass-bottom: hsl(240 5% 96% / 0.95);
+  --nc-aside-top: hsl(0 0% 100% / 0.98);
+  --nc-aside-bottom: hsl(240 5% 96% / 0.99);
+  --background: var(--nc-bg-primary);
+  --foreground: var(--nc-text-primary);
+  color-scheme: light;
+}
+
+html {
+  color-scheme: dark;
+  background-color: var(--nc-bg-primary);
+  color: var(--nc-text-primary);
+}
+
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
 body {
-  @apply bg-background text-foreground antialiased;
-  user-select: none; /* 桌面应用常用 */
+  min-height: 100%;
+  background-color: var(--nc-bg-primary);
+  color: var(--nc-text-primary);
+  @apply antialiased;
+  user-select: none;
+}
+
+#root {
+  min-height: 100%;
 }
 
 .nc-workspace ::selection,
 .nc-workspace *::selection {
-  background: rgb(0 111 238 / 0.3);
+  background: var(--nc-selection);
 }
 
-/* NetOcto 组件局部样式 */
 .nc-root {
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-.nc-aside-scroll {
-  scrollbar-color: hsl(240 5% 34% / 0.45) transparent;
-  scrollbar-width: thin;
+/* ── Layout & surfaces ── */
+.nc-border {
+  border-color: rgb(var(--nc-border-default) / 0.6);
+}
+.nc-border-subtle {
+  border-color: rgb(var(--nc-border-subtle) / 0.45);
 }
 
+.nc-aside-scroll {
+  scrollbar-color: var(--nc-scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
 .nc-aside-scroll::-webkit-scrollbar {
   width: 6px;
 }
-
 .nc-aside-scroll::-webkit-scrollbar-thumb {
   border-radius: 3px;
-  background: hsl(240 5% 34% / 0.45);
+  background: var(--nc-scrollbar-thumb);
 }
-
 .nc-aside-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
 .nc-glass {
-  background: linear-gradient(180deg, hsl(240 6% 10% / 0.95) 0%, hsl(240 6% 8% / 0.88) 100%);
+  background: linear-gradient(180deg, var(--nc-glass-top) 0%, var(--nc-glass-bottom) 100%);
   backdrop-filter: blur(8px);
 }
 
 .nc-aside {
-  background: linear-gradient(165deg, hsl(240 5% 8% / 0.98) 0%, hsl(240 6% 5% / 0.99) 100%);
+  background: linear-gradient(165deg, var(--nc-aside-top) 0%, var(--nc-aside-bottom) 100%);
 }
 
+/* ── Form controls (custom + HeroUI overrides) ── */
 .nc-field {
-  @apply w-full rounded-md border border-zinc-800/90 bg-zinc-950/90 px-2 py-1.5 text-zinc-200 outline-none transition-colors;
-  @apply focus:border-sky-700/60 focus:ring-1 focus:ring-sky-600/25;
+  @apply w-full rounded-md border px-2 py-1.5 outline-none transition-colors;
+  border-color: rgb(var(--nc-border-default) / 0.9);
+  background-color: color-mix(in srgb, var(--nc-bg-primary) 90%, transparent);
+  color: var(--nc-text-body);
 }
-
+.nc-field:focus {
+  border-color: color-mix(in srgb, var(--nc-accent) 60%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--nc-accent) 25%, transparent);
+}
 .nc-field:disabled {
   @apply cursor-not-allowed opacity-55;
 }
 
-.nc-btn-primary {
-  @apply w-full rounded-md bg-gradient-to-b from-emerald-600 to-emerald-700 py-2 text-sm font-semibold text-white shadow-md shadow-emerald-950/40;
-  @apply hover:from-emerald-500 hover:to-emerald-600 active:scale-[0.99];
+.nc-input {
+  @apply min-h-8 rounded-xl border font-mono text-xs sm:min-h-9;
+  border-color: rgb(var(--nc-border-default) / 0.5);
+  background-color: var(--nc-bg-input);
+  color: var(--nc-text-primary);
+}
+.nc-input:hover,
+.nc-input[data-hover="true"] {
+  background-color: var(--nc-bg-input-hover);
 }
 
+.nc-select-trigger {
+  @apply min-h-8 w-full rounded-xl border py-1.5 pl-2.5 pr-2 font-mono text-xs sm:min-h-9;
+  border-color: rgb(var(--nc-border-default) / 0.5);
+  background-color: var(--nc-bg-input);
+  color: var(--nc-text-primary);
+}
+.nc-select-trigger:hover,
+.nc-select-trigger[data-hover="true"] {
+  background-color: var(--nc-bg-input-hover);
+}
+
+.nc-select-trigger-sm {
+  @apply min-h-7 w-full rounded-xl border py-1.5 pl-2 pr-2 font-mono text-[11px] sm:min-h-8 sm:text-xs;
+  border-color: rgb(var(--nc-border-default) / 0.5);
+  background-color: var(--nc-bg-input);
+  color: var(--nc-text-primary);
+}
+.nc-select-trigger-sm:hover,
+.nc-select-trigger-sm[data-hover="true"] {
+  background-color: var(--nc-bg-input-hover);
+}
+
+.nc-listbox-popover {
+  min-width: var(--trigger-width);
+  border: 1px solid rgb(var(--nc-border-default) / 0.8);
+  background-color: var(--nc-bg-surface);
+  padding: 0;
+  box-shadow: 0 10px 40px rgb(0 0 0 / 0.25);
+}
+[data-theme="light"] .nc-listbox-popover {
+  box-shadow: 0 10px 40px rgb(0 0 0 / 0.08);
+}
+
+.nc-listbox {
+  @apply max-h-52 overflow-y-auto p-1 outline-none sm:max-h-60;
+}
+
+.nc-listbox-item {
+  @apply text-xs;
+  color: var(--nc-text-primary);
+}
+
+.nc-config-card {
+  @apply shrink-0 space-y-3 rounded-xl border p-3 shadow-sm;
+  border-color: rgb(var(--nc-border-default) / 0.6);
+  background-color: var(--nc-bg-surface);
+}
+.nc-config-card-title {
+  @apply mb-0.5 text-[10px] font-semibold uppercase tracking-wider;
+  color: var(--nc-text-label);
+}
+.nc-config-card-footer {
+  border-top: 1px solid rgb(var(--nc-border-default) / 0.6);
+  @apply pt-2.5;
+}
+
+.nc-status-panel {
+  @apply rounded-lg border px-2.5 py-2 font-mono text-[10px] leading-relaxed;
+  border-color: rgb(var(--nc-border-default) / 0.8);
+  background-color: var(--nc-bg-inset);
+  color: var(--nc-text-muted);
+}
+
+/* ── Tabs (app chrome) ── */
+.nc-tab {
+  @apply flex max-w-[14rem] shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all;
+  color: var(--nc-text-label);
+}
+.nc-tab:hover {
+  background-color: color-mix(in srgb, var(--nc-bg-elevated) 50%, transparent);
+  color: var(--nc-text-body);
+}
+.nc-tab-active {
+  background-color: var(--nc-bg-elevated);
+  color: var(--nc-text-primary);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+}
+
+.nc-chrome-btn {
+  @apply h-auto min-w-0 rounded-xl border p-1.5 shadow-sm;
+  border-color: rgb(var(--nc-border-default) / 0.6);
+  background-color: var(--nc-bg-surface);
+  color: var(--nc-text-label);
+}
+.nc-chrome-btn:hover,
+.nc-chrome-btn[data-hover="true"] {
+  background-color: var(--nc-bg-elevated);
+  color: var(--nc-text-primary);
+}
+
+/* ── Buttons (session-specific gradients keep brand colors) ── */
+.nc-btn-primary {
+  @apply w-full rounded-md bg-gradient-to-b from-emerald-600 to-emerald-700 py-2 text-sm font-semibold text-white shadow-md;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--nc-status-ok) 25%, transparent);
+}
 .nc-btn-danger {
-  @apply w-full rounded-md border border-red-900/50 bg-gradient-to-b from-red-950/80 to-red-950 py-2 text-sm font-medium text-red-200/95;
-  @apply hover:from-red-900/70 hover:to-red-950/90 active:scale-[0.99];
+  @apply w-full rounded-md border py-2 text-sm font-medium;
+  border-color: color-mix(in srgb, var(--nc-status-err) 50%, transparent);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--nc-status-err) 35%, var(--nc-bg-surface)),
+    var(--nc-bg-inset)
+  );
+  color: color-mix(in srgb, var(--nc-status-err) 85%, var(--nc-text-primary));
 }
 
 .nc-btn-ghost {
-  @apply rounded-md border border-zinc-800/90 bg-zinc-900/50 px-2 py-1 text-zinc-400 transition-colors;
-  @apply hover:border-zinc-700 hover:bg-zinc-800/60 hover:text-zinc-200;
+  @apply rounded-md border px-2 py-1 transition-colors;
+  border-color: rgb(var(--nc-border-default) / 0.9);
+  background-color: color-mix(in srgb, var(--nc-bg-elevated) 50%, transparent);
+  color: var(--nc-text-muted);
 }
-
-.nc-btn-ghost:disabled {
-  @apply cursor-not-allowed opacity-40;
+.nc-btn-ghost:hover {
+  border-color: rgb(var(--nc-border-subtle) / 0.8);
+  background-color: var(--nc-bg-elevated);
+  color: var(--nc-text-body);
 }
 
 .nc-icon-btn {
-  @apply rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-800/80 hover:text-zinc-200;
+  @apply rounded-md p-1.5 transition-colors;
+  color: var(--nc-text-muted);
+}
+.nc-icon-btn:hover {
+  background-color: color-mix(in srgb, var(--nc-bg-elevated) 80%, transparent);
+  color: var(--nc-text-body);
 }
 
-.nc-btn-send {
-  @apply rounded-md bg-gradient-to-b from-emerald-600 to-emerald-700 text-sm font-bold text-white shadow-lg shadow-emerald-950/35;
-  @apply hover:from-emerald-500 hover:to-emerald-600;
+.nc-btn-accent {
+  background-color: var(--nc-accent);
+  color: #fff;
+}
+.nc-btn-accent:hover {
+  background-color: var(--nc-accent-hover);
 }
 
 .nc-scroll {
-  scrollbar-color: hsl(240 4% 28%) hsl(240 6% 6%);
+  scrollbar-color: var(--nc-scrollbar-thumb) var(--nc-bg-primary);
   scrollbar-width: thin;
 }
-
 .nc-scroll::-webkit-scrollbar {
   width: 7px;
   height: 7px;
 }
-
 .nc-scroll::-webkit-scrollbar-thumb {
-  background: hsl(240 4% 26%);
+  background: var(--nc-scrollbar-thumb);
   border-radius: 4px;
 }
-
 .nc-scroll::-webkit-scrollbar-track {
-  background: hsl(240 6% 6%);
+  background: var(--nc-bg-primary);
 }
 
 .nc-selectable,
@@ -115,40 +319,140 @@ body {
   user-select: text;
 }
 
-/* Align with redesign: thin neutral scrollbar */
 .custom-scrollbar {
-  scrollbar-color: #3f3f46 transparent;
+  scrollbar-color: var(--nc-scrollbar-thumb) transparent;
   scrollbar-width: thin;
 }
-
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
-
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: var(--nc-scrollbar-thumb);
   border-radius: 10px;
 }
-
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: var(--nc-scrollbar-thumb-hover);
 }
 
-/* 自定义滚动条 */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+/* Log / editor panels */
+.nc-panel {
+  @apply overflow-hidden rounded-xl border shadow-lg;
+  border-color: rgb(var(--nc-border-default) / 0.6);
+  background-color: var(--nc-bg-surface);
+}
+.nc-panel-header {
+  @apply shrink-0 border-b px-3 py-2 backdrop-blur-md;
+  border-color: rgb(var(--nc-border-default) / 0.6);
+  background-color: color-mix(in srgb, var(--nc-bg-surface) 95%, transparent);
+}
+.nc-log-row:hover {
+  border-color: rgb(var(--nc-border-default) / 0.6);
+  background-color: color-mix(in srgb, var(--nc-bg-elevated) 50%, transparent);
+}
+.nc-split-handle:hover {
+  border-color: rgb(var(--nc-border-subtle) / 0.5);
+  background-color: color-mix(in srgb, var(--nc-bg-elevated) 70%, transparent);
+}
+.nc-split-bar {
+  background-color: rgb(var(--nc-border-subtle) / 0.8);
+}
+.nc-split-bar:hover {
+  background-color: var(--nc-text-faint);
+}
+.nc-split-bar-active {
+  background-color: color-mix(in srgb, var(--nc-accent) 70%, transparent);
 }
 
-/* ::-webkit-scrollbar-track {
-  @apply bg-default-100;
+.nc-encoding-toggle {
+  @apply flex rounded-lg border p-0.5;
+  border-color: rgb(var(--nc-border-default) / 0.3);
+  background-color: var(--nc-bg-input);
+}
+.nc-encoding-btn-active {
+  @apply rounded px-2 py-0.5 text-[10px] font-medium shadow-sm;
+  background-color: var(--nc-bg-input-hover);
+  color: var(--nc-text-primary);
+}
+.nc-encoding-btn {
+  @apply rounded px-2 py-0.5 text-[10px] font-medium transition-colors;
+  color: var(--nc-text-label);
+}
+.nc-encoding-btn:hover {
+  color: var(--nc-text-body);
 }
 
-::-webkit-scrollbar-thumb {
-  @apply bg-default-300 rounded-full;
-} */
+.nc-syntax-payload {
+  color: var(--nc-syntax-payload);
+}
+.nc-syntax-comment {
+  color: var(--nc-syntax-comment);
+}
+
+.nc-highlight-match {
+  background-color: color-mix(in srgb, var(--nc-status-warn) 35%, transparent);
+  color: var(--nc-text-primary);
+}
+
+/* Theme preview swatches in settings */
+.nc-theme-swatch-dark {
+  @apply h-3 w-3 rounded-full border;
+  background-color: #18181b;
+  border-color: rgb(var(--nc-border-default) / 0.8);
+}
+.nc-theme-swatch-light {
+  @apply h-3 w-3 rounded-full border;
+  background-color: #fafafa;
+  border-color: rgb(212 212 216 / 1);
+}
+
+/* HeroUI checkbox custom (NetOcto sidebar) */
+.nc-checkbox-control {
+  @apply mt-0.5 box-border size-4 shrink-0 rounded shadow-none;
+}
+.nc-checkbox-control[data-selected="true"],
+.nc-checkbox-control--selected {
+  border: 1px solid var(--nc-accent);
+  background-color: var(--nc-accent);
+  color: #fff;
+}
+.nc-checkbox-control:not([data-selected="true"]):not(.nc-checkbox-control--selected) {
+  border: 1px solid var(--nc-text-faint);
+  background-color: var(--nc-bg-primary);
+  color: var(--nc-text-muted);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+}
+[data-theme="light"] .nc-checkbox-control:not([data-selected="true"]) {
+  box-shadow: inset 0 1px 0 rgb(0 0 0 / 0.04);
+}
+
+/* HeroUI surfaces inside NetOcto chrome (secondary inputs without nc-input) */
+.app-heroui-sm .input,
+.app-heroui-sm .textarea,
+.app-heroui-sm .select__trigger {
+  border-color: rgb(var(--nc-border-default) / 0.5);
+  background-color: var(--nc-bg-input);
+  color: var(--nc-text-primary);
+}
+.app-heroui-sm .input:hover,
+.app-heroui-sm .textarea:hover,
+.app-heroui-sm .select__trigger:hover,
+.app-heroui-sm .input[data-hover="true"],
+.app-heroui-sm .select__trigger[data-hover="true"] {
+  background-color: var(--nc-bg-input-hover);
+}
+.app-heroui-sm .modal__dialog {
+  background-color: var(--nc-bg-surface);
+  color: var(--nc-text-primary);
+}
+.app-heroui-sm .list-box-item {
+  color: var(--nc-text-primary);
+}
+.app-heroui-sm .list-box-item[data-selected="true"],
+.app-heroui-sm .list-box-item[data-focus="true"] {
+  background-color: color-mix(in srgb, var(--nc-accent) 12%, var(--nc-bg-elevated));
+}
+

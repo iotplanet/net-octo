@@ -14,7 +14,9 @@
       {
         "title": "net-octo",
         "width": 1100,
-        "height": 720
+        "height": 720,
+        "visible": false,
+        "backgroundColor": "#0a0a0b"
       }
     ],
     "security": {

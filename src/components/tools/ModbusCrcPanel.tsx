@@ -67,14 +67,14 @@ export function ModbusCrcPanel() {
         {t('tools.modbusCrc.hint')}
       </Text>
       <div>
-        <Label htmlFor="modbus-crc-input" className="mb-1.5 block text-xs font-medium text-zinc-300">
+        <Label htmlFor="modbus-crc-input" className="mb-1.5 block text-xs font-medium text-[var(--nc-text-body)]">
           {t('tools.modbusCrc.inputLabel')}
         </Label>
         <Input
           id="modbus-crc-input"
           value={hexInput}
           onChange={(e) => setHexInput(e.target.value)}
-          className="font-mono text-xs"
+          className={`nc-input font-mono text-xs`}
           placeholder="01 03 00 00 00 01"
           aria-invalid={!!errorMessage}
         />
@@ -85,18 +85,18 @@ export function ModbusCrcPanel() {
         ) : null}
       </div>
       {result && !('error' in result) ? (
-        <div className="space-y-3 rounded-xl border border-zinc-800/60 bg-[#27272a]/50 p-3 font-mono text-xs">
+        <div className="space-y-3 rounded-xl border nc-border bg-[color-mix(in_srgb,var(--nc-bg-elevated)_50%,transparent)] p-3 font-mono text-xs">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <span className="text-zinc-500">{t('tools.modbusCrc.crcValue')}</span>
-            <span className="text-[#5EA2EF]">0x{result.crcHex}</span>
+            <span className="text-[var(--nc-text-muted)]">{t('tools.modbusCrc.crcValue')}</span>
+            <span className="text-[var(--nc-accent-soft)]">0x{result.crcHex}</span>
           </div>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <span className="text-zinc-500">{t('tools.modbusCrc.crcWire')}</span>
-            <span className="text-zinc-100">{result.crcLoHi}</span>
+            <span className="text-[var(--nc-text-muted)]">{t('tools.modbusCrc.crcWire')}</span>
+            <span className="text-[var(--nc-text-primary)]">{result.crcLoHi}</span>
           </div>
           <div>
-            <span className="mb-1 block text-zinc-500">{t('tools.modbusCrc.frameWithCrc')}</span>
-            <p className="break-all leading-relaxed text-zinc-200">{result.frameHex}</p>
+            <span className="mb-1 block text-[var(--nc-text-muted)]">{t('tools.modbusCrc.frameWithCrc')}</span>
+            <p className="break-all leading-relaxed text-[var(--nc-text-body)]">{result.frameHex}</p>
           </div>
         </div>
       ) : null}
@@ -131,7 +131,7 @@ export function ModbusCrcPanel() {
           size="sm"
           variant="outline"
           isDisabled={!result || 'error' in result}
-          className="border-zinc-600"
+          className="border-[rgb(var(--nc-border-default)/0.65)]"
           onPress={() => {
             if (result && !('error' in result)) handleInsert(result.frameHex)
           }}
@@ -140,12 +140,12 @@ export function ModbusCrcPanel() {
         </Button>
       </div>
       {copyHint ? (
-        <Text type="body-xs" className="text-[#17c964]">
+        <Text type="body-xs" className="text-[var(--nc-status-ok)]">
           {copyHint}
         </Text>
       ) : null}
       {insertHint ? (
-        <Text type="body-xs" className={insertHint === t('tools.modbusCrc.inserted') ? 'text-[#17c964]' : 'text-amber-400'}>
+        <Text type="body-xs" className={insertHint === t('tools.modbusCrc.inserted') ? 'text-[var(--nc-status-ok)]' : 'text-amber-400'}>
           {insertHint}
         </Text>
       ) : null}

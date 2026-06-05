@@ -2,6 +2,7 @@ import { Button, Modal, Text, useOverlayState } from '@heroui/react'
 import { Wrench } from 'lucide-react'
 import { ModbusCrcPanel } from './ModbusCrcPanel'
 import { useI18n } from '../../i18n'
+import { NC_CHROME_BTN } from '../../network/themeClasses'
 
 export function ToolsModalTrigger({ className }: { className?: string }) {
   const { t } = useI18n()
@@ -14,10 +15,7 @@ export function ToolsModalTrigger({ className }: { className?: string }) {
         size="sm"
         variant="ghost"
         aria-label={t('app.tools')}
-        className={
-          className ??
-          'h-auto min-w-0 rounded-xl border border-zinc-800/60 bg-[#18181b] p-1.5 text-zinc-400 shadow-sm hover:text-zinc-100 data-[hover=true]:bg-[#27272a]'
-        }
+        className={className ?? NC_CHROME_BTN}
         onPress={() => toolsModal.open()}
       >
         <Wrench size={14} />
@@ -25,12 +23,12 @@ export function ToolsModalTrigger({ className }: { className?: string }) {
       <Modal state={toolsModal}>
         <Modal.Backdrop>
           <Modal.Container size="md" placement="center" scroll="inside">
-            <Modal.Dialog className="max-w-lg bg-[#18181b] text-zinc-100">
+            <Modal.Dialog className="max-w-lg bg-[var(--nc-bg-surface)] text-[var(--nc-text-primary)]">
               <Modal.Header>
                 <Modal.Heading>{t('tools.title')}</Modal.Heading>
               </Modal.Header>
               <Modal.Body className="flex flex-col gap-2">
-                <Text type="body-xs" className="font-semibold uppercase tracking-wider text-zinc-500">
+                <Text type="body-xs" className="font-semibold uppercase tracking-wider text-[var(--nc-text-muted)]">
                   {t('tools.modbusSection')}
                 </Text>
                 <ModbusCrcPanel />

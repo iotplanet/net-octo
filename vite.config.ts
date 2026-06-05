@@ -1,12 +1,32 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
+/** Ensure boot-theme.js runs before @vite/client in dev and build. */
+function themeBootFirst(): Plugin {
+  return {
+    name: "netocto-theme-boot-first",
+    transformIndexHtml: {
+      order: "pre",
+      handler(html) {
+        if (html.includes("boot-theme.js")) return html;
+        return [
+          {
+            tag: "script",
+            attrs: { src: "/boot-theme.js" },
+            injectTo: "head-prepend",
+          },
+        ];
+      },
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react()],
+  plugins: [themeBootFirst(), react()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

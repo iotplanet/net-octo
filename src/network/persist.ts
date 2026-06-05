@@ -2,6 +2,9 @@ export type SessionMode = 'tcp_server' | 'tcp_client' | 'udp_server' | 'udp_clie
 
 export type UdpTargetKind = 'unicast' | 'multicast' | 'broadcast'
 
+export type SendEncoding = 'ascii' | 'hex' | 'utf8'
+export type RecvEncoding = 'ascii' | 'hex' | 'utf8'
+
 export interface SendPreset {
   id: string
   /** Short label shown like `### title` in the UI */
@@ -26,6 +29,8 @@ export interface PersistedSettings {
   port: string
   remoteHost: string
   remotePort: string
+  recvEncoding?: RecvEncoding
+  sendEncoding?: SendEncoding
   recvAscii: boolean
   sendAscii: boolean
   parseEscapes: boolean
@@ -58,6 +63,8 @@ export interface PersistedSettings {
   tcpHeartbeatHex?: string
   /** Enable OS TCP keepalive on the socket */
   tcpTcpKeepalive?: boolean
+  /** Enable TLS for TCP sessions */
+  tcpUseTls?: boolean
 }
 
 export const CENTER_SPLIT_RATIO_DEFAULT = 0.5
@@ -80,6 +87,8 @@ export const defaultSettings: PersistedSettings = {
   remotePort: '8080',
   udpTargetKind: 'unicast',
   udpMulticastGroups: [],
+  recvEncoding: 'ascii',
+  sendEncoding: 'ascii',
   recvAscii: true,
   sendAscii: true,
   parseEscapes: true,
@@ -101,42 +110,73 @@ export const defaultSettings: PersistedSettings = {
   tcpHeartbeatTimeoutMs: 90_000,
   tcpHeartbeatHex: '00',
   tcpTcpKeepalive: false,
-}
-
-export function tcpClientLinkInvokeFields(s: PersistedSettings) {
-  return {
-    autoReconnect: s.tcpAutoReconnect ?? defaultSettings.tcpAutoReconnect,
-    reconnectIntervalMs: s.tcpReconnectIntervalMs ?? defaultSettings.tcpReconnectIntervalMs,
-    reconnectMaxAttempts: s.tcpReconnectMaxAttempts ?? defaultSettings.tcpReconnectMaxAttempts,
-    reconnectBackoff: s.tcpReconnectBackoff ?? defaultSettings.tcpReconnectBackoff,
-    heartbeatEnabled: s.tcpHeartbeatEnabled ?? defaultSettings.tcpHeartbeatEnabled,
-    heartbeatIntervalMs: s.tcpHeartbeatIntervalMs ?? defaultSettings.tcpHeartbeatIntervalMs,
-    heartbeatTimeoutMs: s.tcpHeartbeatTimeoutMs ?? defaultSettings.tcpHeartbeatTimeoutMs,
-    heartbeatHex: (s.tcpHeartbeatHex ?? defaultSettings.tcpHeartbeatHex ?? '00').trim(),
-    tcpKeepalive: s.tcpTcpKeepalive ?? defaultSettings.tcpTcpKeepalive,
-  }
+  tcpUseTls: false,
 }
 
 export function loadSettings(tabId: string): PersistedSettings {
   try {
     let raw = localStorage.getItem(storageKey(tabId))
     if (!raw) {
-      raw = localStorage.getItem(legacyStorageKey(tabId))
-      if (raw) {
+      const legacyRaw = localStorage.getItem(legacyStorageKey(tabId))
+      if (legacyRaw) {
         try {
-          localStorage.setItem(storageKey(tabId), raw)
+          localStorage.setItem(storageKey(tabId), legacyRaw)
+          raw = legacyRaw
+        } catch {
+          /* quota or storage error — legacy key preserved for next attempt */
+          return { ...defaultSettings }
+        }
+        try {
           localStorage.removeItem(legacyStorageKey(tabId))
         } catch {
-          /* ignore */
+          /* legacy key cleanup is best-effort; data already migrated */
         }
       }
     }
     if (!raw) return { ...defaultSettings }
     const o = JSON.parse(raw) as Partial<PersistedSettings>
+    if (o.recvEncoding == null && o.recvAscii !== undefined) {
+      o.recvEncoding = o.recvAscii ? 'ascii' : 'hex'
+    }
+    if (o.sendEncoding == null && o.sendAscii !== undefined) {
+      o.sendEncoding = o.sendAscii ? 'ascii' : 'hex'
+    }
     return { ...defaultSettings, ...o }
   } catch {
     return { ...defaultSettings }
   }
+}
+
+export function effectiveRecvEncoding(s: PersistedSettings): RecvEncoding {
+  return s.recvEncoding ?? (s.recvAscii ? 'ascii' : 'hex')
+}
+
+export function effectiveSendEncoding(s: PersistedSettings): SendEncoding {
+  return s.sendEncoding ?? (s.sendAscii ? 'ascii' : 'hex')
+}
+
+export function recvIsAscii(e: RecvEncoding): boolean {
+  return e === 'ascii'
+}
+
+export function recvIsHex(e: RecvEncoding): boolean {
+  return e === 'hex'
+}
+
+export function recvIsUtf8(e: RecvEncoding): boolean {
+  return e === 'utf8'
+}
+
+export function sendIsAscii(e: SendEncoding): boolean {
+  return e === 'ascii'
+}
+
+export function sendIsHex(e: SendEncoding): boolean {
+  return e === 'hex'
+}
+
+export function sendIsUtf8(e: SendEncoding): boolean {
+  return e === 'utf8'
 }
 
 export function saveSettings(tabId: string, s: PersistedSettings) {

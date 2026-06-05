@@ -362,7 +362,7 @@ fn ensure_udp_peer(peers: &mut HashMap<u64, SocketAddr>, next: &mut u64, addr: S
 }
 
 pub(crate) async fn client_loop(
-    mut socket: TcpStream,
+    socket: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     id: u64,
     peer: String,
     mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -375,7 +375,7 @@ pub(crate) async fn client_loop(
     notify_session_end: Option<tokio::sync::oneshot::Sender<()>>,
     last_rx: Option<Arc<RwLock<Instant>>>,
 ) {
-    let (mut read_half, mut write_half) = socket.split();
+    let (mut read_half, mut write_half) = tokio::io::split(socket);
     let mut buf = vec![0u8; 16384];
     loop {
         tokio::select! {
@@ -389,6 +389,8 @@ pub(crate) async fn client_loop(
                         stats.rx_pkts.fetch_add(1, Ordering::Relaxed);
                         stats.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                         let chunk = &buf[..n];
+                        #[cfg(feature = "octo-db")]
+                        feed_octo_session(&app, chunk);
                         let body = format_recv(chunk, recv_hex);
                         let line = format!("[#{}] {}", id, body);
                         emit_log(&app, &webview, &session, "recv", line).await;
@@ -462,6 +464,8 @@ async fn udp_server_loop(
                         stats.rx_pkts.fetch_add(1, Ordering::Relaxed);
                         stats.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                         let chunk = &buf[..n];
+                        #[cfg(feature = "octo-db")]
+                        feed_octo_session(&app, chunk);
                         let body = format_recv(chunk, recv_hex);
                         let id = ensure_udp_peer(&mut peers, &mut next_id, addr);
                         emit_clients_vec(&app, &webview, &session, peers_to_client_info(&peers)).await;
@@ -545,6 +549,8 @@ async fn udp_client_loop_connected(
                         stats.rx_pkts.fetch_add(1, Ordering::Relaxed);
                         stats.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                         let chunk = &buf[..n];
+                        #[cfg(feature = "octo-db")]
+                        feed_octo_session(&app, chunk);
                         let body = format_recv(chunk, recv_hex);
                         let line = format!("[← {}] {}", remote, body);
                         emit_log(&app, &webview, &session, "recv", line).await;
@@ -602,6 +608,8 @@ async fn udp_client_loop_datagram(
                         stats.rx_pkts.fetch_add(1, Ordering::Relaxed);
                         stats.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
                         let chunk = &buf[..n];
+                        #[cfg(feature = "octo-db")]
+                        feed_octo_session(&app, chunk);
                         let body = format_recv(chunk, recv_hex);
                         let line = format!("[← {}] {}", src, body);
                         emit_log(&app, &webview, &session, "recv", line).await;
@@ -719,12 +727,16 @@ pub enum StartSessionArgs {
         bind: String,
         port: u16,
         recv_hex: bool,
+        #[serde(default)]
+        use_tls: bool,
     },
     #[serde(rename = "tcp_client")]
     TcpClient {
         host: String,
         port: u16,
         recv_hex: bool,
+        #[serde(default)]
+        use_tls: bool,
         #[serde(flatten)]
         link: tcp_client_link::TcpClientLinkOptions,
     },
@@ -803,13 +815,22 @@ pub async fn nc_start_session(
             bind,
             port,
             recv_hex,
+            use_tls,
         } => {
             let addr_s = format!("{}:{}", bind, port);
             let listener = TcpListener::bind(&addr_s)
                 .await
                 .map_err(|e| format!("绑定失败 {}: {}", addr_s, e))?;
+            let tls_acceptor = if use_tls {
+                let (cert, key) = crate::tls::generate_self_signed_cert()?;
+                let cfg = crate::tls::server_config(cert, key)?;
+                Some(crate::tls::acceptor(cfg))
+            } else {
+                None
+            };
             let wv_c = wv.clone();
             let sid_c = sid.clone();
+            let proto = if use_tls { "TLS " } else { "" };
             tokio::spawn(async move {
                 emit_server_state(&app_c, &wv_c, &sid_c, true, addr_s.clone(), mode_str).await;
                 emit_log(
@@ -817,7 +838,7 @@ pub async fn nc_start_session(
                     &wv_c,
                     &sid_c,
                     "server",
-                    format!("# TCP server listening on {}", addr_s),
+                    format!("# {}TCP server listening on {}", proto, addr_s),
                 )
                 .await;
                 emit_stats(&app_c, &wv_c, &sid_c, &stats_c).await;
@@ -833,27 +854,57 @@ pub async fn nc_start_session(
                             match acc {
                                 Ok((socket, a)) => {
                                     let peer = a.to_string();
+                                    let peer_for_task = peer.clone();
                                     let id = next_id.fetch_add(1, Ordering::Relaxed);
                                     let (tx, rx) = mpsc::unbounded_channel();
                                     let app_t = app_c.clone();
+                                    let app_for_task = app_c.clone();
                                     let stats_t = stats_c.clone();
                                     let clients_t = clients_c.clone();
+                                    let clients_for_task = clients_c.clone();
                                     let wv_t = wv_c.clone();
                                     let sid_t = sid_c.clone();
-                                    let task = tokio::spawn(client_loop(
-                                        socket,
-                                        id,
-                                        peer.clone(),
-                                        rx,
-                                        app_t.clone(),
-                                        wv_t,
-                                        sid_t,
-                                        stats_t,
-                                        recv_hex,
-                                    clients_t.clone(),
-                                    None,
-                                    None,
-                                ));
+                                    let acceptor_opt = tls_acceptor.clone();
+                                    let task = tokio::spawn(async move {
+                                        if let Some(acceptor) = acceptor_opt {
+                                            match acceptor.accept(socket).await {
+                                                Ok(tls_stream) => {
+                                                    client_loop(
+                                                        tls_stream,
+                                                        id,
+                                                        peer_for_task,
+                                                        rx,
+                                                        app_for_task,
+                                                        wv_t,
+                                                        sid_t,
+                                                        stats_t,
+                                                        recv_hex,
+                                                        clients_for_task,
+                                                        None,
+                                                        None,
+                                                    ).await;
+                                                }
+                                                Err(e) => {
+                                                    emit_log(&app_for_task, &wv_t, &sid_t, "error", format!("TLS accept: {}", e)).await;
+                                                }
+                                            }
+                                        } else {
+                                            client_loop(
+                                                socket,
+                                                id,
+                                                peer_for_task,
+                                                rx,
+                                                app_for_task,
+                                                wv_t,
+                                                sid_t,
+                                                stats_t,
+                                                recv_hex,
+                                                clients_for_task,
+                                                None,
+                                                None,
+                                            ).await;
+                                        }
+                                    });
                                     {
                                         let mut g = clients_t.write().await;
                                         g.insert(
@@ -892,6 +943,7 @@ pub async fn nc_start_session(
             host,
             port,
             recv_hex,
+            use_tls,
             link,
         } => {
             let addr_s = format!("{}:{}", host, port);
@@ -906,6 +958,7 @@ pub async fn nc_start_session(
                     sid_c,
                     addr_s,
                     recv_hex,
+                    use_tls,
                     link,
                     stats_c,
                     clients_c,
@@ -1391,4 +1444,27 @@ pub async fn nc_reset_stats(
     )
     .await;
     Ok(())
+}
+
+#[tauri::command]
+pub fn nc_list_interfaces() -> Result<Vec<String>, String> {
+    let ifaces = if_addrs::get_if_addrs().map_err(|e| e.to_string())?;
+    let mut addrs: Vec<String> = ifaces
+        .iter()
+        .map(|i| i.addr.ip().to_string())
+        .collect();
+    addrs.sort();
+    addrs.dedup();
+    Ok(addrs)
+}
+
+#[cfg(feature = "octo-db")]
+pub(crate) fn feed_octo_session(app: &AppHandle, chunk: &[u8]) {
+    if let Some(bridge) = app.try_state::<std::sync::Arc<crate::octo_bridge::OctoBridge>>() {
+        let data = chunk.to_vec();
+        let bridge = bridge.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || bridge.feed(&data)).await;
+        });
+    }
 }

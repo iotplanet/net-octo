@@ -4,7 +4,6 @@ import { I18nProvider } from './i18n'
 import NetOctoApp from './network/NetOctoApp'
 import { SettingsWindowPage } from './SettingsWindowPage'
 import { SETTINGS_WEBVIEW_LABEL } from './settingsWindowLabel'
-
 function readWebviewLabel(): string {
   try {
     return getCurrentWebviewWindow().label
@@ -18,7 +17,7 @@ export default function App() {
   const isSettingsWindow = webviewLabel === SETTINGS_WEBVIEW_LABEL
 
   return (
-    <div className="app-heroui-sm min-h-screen bg-[#0a0a0b] text-foreground">
+    <div className="app-heroui-sm min-h-screen bg-[var(--nc-bg-primary)] text-foreground">
       <I18nProvider>
         {isSettingsWindow ? <SettingsWindowPage /> : <NetOctoApp />}
       </I18nProvider>
